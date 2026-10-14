@@ -90,6 +90,7 @@ ALLOWLIST: dict[tuple[str, str], str] = {
     ("POST", "/api/agents/connections"): "the requester's own LLM credentials",
     ("PATCH", "/api/agents/connections/{conn_id}"): "the requester's own LLM credentials",
     ("DELETE", "/api/agents/connections/{conn_id}"): "the requester's own LLM credentials",
+    ("POST", "/api/agents/connections/{conn_id}/revoke"): "revokes the requester's own LLM credential",
     ("POST", "/api/agents/connections/{conn_id}/test"): "probes the requester's own credential",
     # Global, not workspace data: FX rates are shared by the whole instance.
     # Any authenticated user may refresh them, and nothing per-workspace is

@@ -260,16 +260,17 @@ async def test_stale_rotation_cannot_overwrite_newer_bundle(session, test_user):
 
 
 @pytest.mark.asyncio
-async def test_deleting_connection_cascades_oauth_credential(session, test_user):
+async def test_deleting_connection_rejects_unrevoked_oauth_credential(session, test_user):
     connection = await connection_service.create_connection(
         session, test_user.id, name="ChatGPT", kind="openai_chatgpt"
     )
     connection_id = connection.id
+    user_id = test_user.id
     now = datetime.now(timezone.utc)
     await create_credential(
         session,
         connection_id,
-        test_user.id,
+        user_id,
         bundle=CredentialBundle("access", "refresh", "id"),
         issuer="https://auth.openai.com",
         subject="subject",
@@ -279,17 +280,10 @@ async def test_deleting_connection_cascades_oauth_credential(session, test_user)
         access_token_expires_at=now + timedelta(hours=1),
     )
 
-    assert await connection_service.delete_connection(
-        session, connection_id, test_user.id
-    ) is True
-    assert await get_owned_credential(session, connection_id, test_user.id) is None
-    assert (
-        await session.execute(
-            select(OpenAIOAuthCredential).where(
-                OpenAIOAuthCredential.connection_id == connection_id
-            )
-        )
-    ).scalar_one_or_none() is None
+    with pytest.raises(ValueError, match="revoke"):
+        await connection_service.delete_connection(session, connection_id, user_id)
+    await session.rollback()
+    assert await get_owned_credential(session, connection_id, user_id) is not None
 
 
 @pytest.mark.asyncio

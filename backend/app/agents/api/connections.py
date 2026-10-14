@@ -79,9 +79,36 @@ async def delete_connection(
     session: AsyncSession = Depends(get_async_session),
     user: User = Depends(current_active_user),
 ):
-    ok = await connection_service.delete_connection(session, conn_id, user.id)
+    try:
+        ok = await connection_service.delete_connection(session, conn_id, user.id)
+    except ValueError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from None
     if not ok:
         raise HTTPException(status_code=404, detail="connection not found")
+
+
+@router.post("/connections/{conn_id}/revoke", status_code=status.HTTP_204_NO_CONTENT)
+async def revoke_connection(
+    conn_id: uuid.UUID,
+    session: AsyncSession = Depends(get_async_session),
+    user: User = Depends(current_active_user),
+):
+    conn = await connection_service.get_connection(session, conn_id, user.id)
+    if conn is None:
+        raise HTTPException(status_code=404, detail="connection not found")
+    if conn.kind != "openai_chatgpt" or conn.oauth_credential is None:
+        raise HTTPException(status_code=409, detail="connection has no ChatGPT OAuth credential")
+
+    from app.agents.services.oauth_refresh import revoke_credential
+    from app.agents.services.openai_oauth import OAuthLifecycleError
+
+    try:
+        await revoke_credential(session, conn.id, user.id)
+    except OAuthLifecycleError as exc:
+        raise HTTPException(
+            status_code=503 if exc.retryable else 502, detail=str(exc)
+        ) from None
 
 
 @router.post("/connections/{conn_id}/test", response_model=ConnectionTestResult)
@@ -93,4 +120,6 @@ async def test_connection(
     conn = await connection_service.get_connection(session, conn_id, user.id)
     if conn is None:
         raise HTTPException(status_code=404, detail="connection not found")
+    if conn.kind == "openai_chatgpt":
+        return await connection_service.test_connection(conn, session=session)
     return await connection_service.test_connection(conn)
