@@ -251,6 +251,39 @@ async def test_chatgpt_unknown_refresh_outcome_is_serialized_as_safe_reauth_stat
 
 
 @pytest.mark.asyncio
+async def test_chatgpt_cleanup_pending_is_serialized_as_safe_reauth_state(
+    client, auth_headers, session, test_user
+):
+    connection = await connection_service.create_connection(
+        session, test_user.id, name="ChatGPT cleanup", kind="openai_chatgpt"
+    )
+    credential = await create_credential(
+        session,
+        connection.id,
+        test_user.id,
+        bundle=CredentialBundle("access-secret", "refresh-secret", "id-secret"),
+        issuer="https://auth.openai.com",
+        subject="subject-secret",
+        issued_client_id="client-secret",
+        account_email="owner@example.com",
+        scopes=["openid"],
+        access_token_expires_at=datetime.now(timezone.utc),
+    )
+    credential.last_error_code = "resource_cleanup_pending"
+    await session.commit()
+
+    response = await client.get(
+        f"/api/agents/connections/{connection.id}", headers=auth_headers
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["credential_status"] == "active"
+    assert body["credential_error_code"] == "resource_cleanup_pending"
+    assert body["needs_reauthorization"] is True
+    assert "refresh-secret" not in response.text
+
+
+@pytest.mark.asyncio
 async def test_chatgpt_revoke_endpoint_scrubs_locally_and_surfaces_remote_failure(
     client, auth_headers, session, test_user
 ):
@@ -386,7 +419,7 @@ async def test_pending_chatgpt_credential_cannot_use_scrubbed_delete_path(
 
 @pytest.mark.asyncio
 async def test_disabled_chatgpt_credential_can_be_revoked_then_deleted(
-    client, auth_headers, session, test_user
+    client, auth_headers, session, test_user, monkeypatch
 ):
     """Scope loss retains identity, but disconnect still revokes and scrubs it."""
     connection = await connection_service.create_connection(
@@ -407,6 +440,16 @@ async def test_disabled_chatgpt_credential_can_be_revoked_then_deleted(
     )
     connection_id = connection.id
     user_id = test_user.id
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from app.agents.services import oauth_refresh
+
+    monkeypatch.setattr(
+        oauth_refresh,
+        "_resource_session_maker",
+        async_sessionmaker(session.bind, expire_on_commit=False),
+    )
 
     from app.agents.services.openai_oauth import OAuthFailureCode, OAuthLifecycleError
 

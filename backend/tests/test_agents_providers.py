@@ -6,6 +6,7 @@ We don't talk to real LLM providers in unit tests. Instead:
   - Test the high-level chat() helper assembles streaming chunks correctly.
 """
 import json
+from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 import pytest
@@ -32,8 +33,14 @@ from app.agents.providers.openai import (
 )
 
 
-def test_registry_lists_all_four_providers():
-    assert set(list_providers()) == {"ollama", "openai", "anthropic", "openai_compatible"}
+def test_registry_lists_all_five_providers():
+    assert set(list_providers()) == {
+        "ollama",
+        "openai",
+        "anthropic",
+        "openai_compatible",
+        "openai_chatgpt",
+    }
 
 
 def test_registry_unknown_raises():
@@ -47,6 +54,20 @@ def test_registry_build_openai_compat_requires_base_url():
     # the constructor raises ValueError. Either is acceptable as a refusal.
     with pytest.raises((ValueError, TypeError)):
         build_provider("openai_compatible", base_url="")
+
+
+def test_registry_builds_chatgpt_only_with_explicit_lifecycle():
+    from app.agents.providers.openai_chatgpt import OpenAIChatGPTProvider
+
+    @asynccontextmanager
+    async def access(**_kwargs):
+        yield object()
+
+    provider = build_provider("openai_chatgpt", access_token=access, model="gpt-plan")
+    assert isinstance(provider, OpenAIChatGPTProvider)
+    assert provider.default_model == "gpt-plan"
+    with pytest.raises(ValueError, match="lifecycle"):
+        build_provider("openai_chatgpt", api_key="must-not-be-reinterpreted")
 
 
 def test_openai_serialization_basic_message():

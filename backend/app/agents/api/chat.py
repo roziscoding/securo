@@ -7,8 +7,10 @@ with summaries when results land.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
+from collections.abc import AsyncGenerator
 from dataclasses import asdict
 from typing import AsyncIterator
 
@@ -16,6 +18,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import StreamingResponse
 
+from app.agents.providers.base import (
+    LLM_OPERATION_TIMEOUT_SECONDS,
+    OperationCancellationScope,
+    bounded_async_iterator,
+    discard_untrusted_exception as _discard_untrusted_exception,
+)
 from app.agents.runtime.executor import AgentExecutor, ExecutorEvent
 from app.agents.schemas.conversation import SendMessageRequest
 from app.agents.services import agent_service, conversation_service
@@ -24,10 +32,86 @@ from app.core.workspace_context import WorkspaceContext, current_writable_worksp
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
+_UNEXPECTED_ERROR_EVENT = (
+    b'event: error\ndata: {"error_code": "unknown", '
+    b'"error_message": "Agent request failed unexpectedly."}\n\n'
+)
+
 
 def _format_event(event: ExecutorEvent) -> bytes:
     payload = {k: v for k, v in asdict(event).items() if v is not None}
-    return f"event: {event.type}\ndata: {json.dumps(payload, default=str)}\n\n".encode()
+    return f"event: {event.type}\ndata: {json.dumps(payload)}\n\n".encode()
+
+
+async def _stream_executor_events(
+    events: AsyncIterator[ExecutorEvent],
+) -> AsyncGenerator[bytes, None]:
+    """Serialize executor events with total, operation-local boundaries."""
+    stream: AsyncIterator[ExecutorEvent] | None = None
+    cancelled = False
+    terminal_error = False
+    generator_closed = False
+    cancellation = OperationCancellationScope()
+    try:
+        await cancellation.checkpoint()
+        try:
+            stream = bounded_async_iterator(
+                events,
+                timeout_seconds=LLM_OPERATION_TIMEOUT_SECONDS,
+                timeout_error="Agent request timed out",
+                cleanup_error="Agent stream cleanup failed",
+            )
+        except BaseException:  # noqa: BLE001 - untrusted iterator construction
+            terminal_error = True
+
+        while stream is not None and not terminal_error and not cancelled:
+            try:
+                event = await anext(stream)
+                payload = _format_event(event)
+            except StopAsyncIteration:
+                break
+            except asyncio.CancelledError:
+                if cancellation.requested():
+                    cancelled = True
+                else:
+                    terminal_error = True
+                break
+            except BaseException:  # noqa: BLE001 - model-derived event boundary
+                terminal_error = True
+                break
+
+            # Keep the yield outside untrusted guards so ``aclose()`` retains
+            # normal async-generator closure semantics.
+            yield payload
+            if (
+                type(event) is ExecutorEvent
+                and type(event.type) is str
+                and event.type == "done"
+            ):
+                break
+    except GeneratorExit:
+        # Suppress the injected close signal until owned cleanup finishes so
+        # cancellation delivered during cleanup can remain authoritative.
+        generator_closed = True
+    finally:
+        if stream is not None:
+            try:
+                await stream.aclose()
+            except asyncio.CancelledError:
+                cancelled = True
+            except BaseException as cleanup_failure:
+                _discard_untrusted_exception(cleanup_failure)
+                if not terminal_error and not generator_closed:
+                    terminal_error = True
+        stream = None
+        del events
+
+    if cancelled:
+        raise asyncio.CancelledError from None
+    if generator_closed:
+        return
+    if terminal_error:
+        yield _UNEXPECTED_ERROR_EVENT
 
 
 @router.post("/{agent_id}/chat")
@@ -71,20 +155,28 @@ async def chat(
     async def gen() -> AsyncIterator[bytes]:
         # Send the conversation id immediately so the client can update its URL.
         yield f"event: conversation\ndata: {json.dumps({'conversation_id': str(conv.id)})}\n\n".encode()
+        stream = bounded_async_iterator(
+            _stream_executor_events(
+                executor.run(
+                    session=session,
+                    agent=agent,
+                    user_id=ctx.user_id,
+                    workspace_id=ctx.workspace.id,
+                    conversation_id=conv.id,
+                    user_message=body.content,
+                    channel=body.channel,
+                    page_context=body.page_context,
+                )
+            ),
+            timeout_seconds=LLM_OPERATION_TIMEOUT_SECONDS,
+            timeout_error="Agent request timed out",
+            cleanup_error="Agent stream cleanup failed",
+        )
         try:
-            async for ev in executor.run(
-                session=session,
-                agent=agent,
-                user_id=ctx.user_id,
-                workspace_id=ctx.workspace.id,
-                conversation_id=conv.id,
-                user_message=body.content,
-                channel=body.channel,
-                page_context=body.page_context,
-            ):
-                yield _format_event(ev)
-        except Exception as exc:  # noqa: BLE001
-            yield f"event: error\ndata: {json.dumps({'error_code': 'unknown', 'error_message': str(exc)})}\n\n".encode()
+            async for payload in stream:
+                yield payload
+        finally:
+            await stream.aclose()
 
     return StreamingResponse(gen(), media_type="text/event-stream", headers={
         "Cache-Control": "no-cache",

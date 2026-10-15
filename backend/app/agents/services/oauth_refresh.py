@@ -5,20 +5,29 @@ import asyncio
 import logging
 import uuid
 import weakref
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Callable
+from typing import Callable, Literal
 
 from billiard.exceptions import SoftTimeLimitExceeded
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.config import MAX_OAUTH_TIMEOUT_SECONDS
+from app.agents.models.connection import LlmConnection
 from app.agents.models.oauth_credential import OpenAIOAuthCredential
+from app.agents.providers.base import LLMAuthError, LLMUnavailableError
+from app.core.database import async_session_maker
 from app.agents.services.oauth_credentials import (
+    RESOURCE_CLEANUP_PENDING,
     StaleCredentialVersionError,
     begin_refresh_attempt,
     begin_revocation_attempt,
+    claim_credential_lease,
     decrypt_bundle,
     get_owned_credential,
+    release_credential_lease,
     rotate_credential,
     scrub_credential_bundle,
     transition_credential_status,
@@ -38,6 +47,140 @@ _REFRESH_WINDOW = timedelta(minutes=5)
 # a bounded whole-request timeout; use the maximum accepted configuration.
 _MAX_OPERATION_NETWORK_SECONDS = 2 * MAX_OAUTH_TIMEOUT_SECONDS
 _OPERATION_LEASE = timedelta(seconds=_MAX_OPERATION_NETWORK_SECONDS + 120)
+_RESOURCE_CLEANUP_TIMEOUT_SECONDS = 5.0
+_RESOURCE_LEASE_SAFETY_MARGIN_SECONDS = 60.0
+_RESOURCE_LEASE = timedelta(
+    seconds=(
+        MAX_OAUTH_TIMEOUT_SECONDS
+        + _RESOURCE_CLEANUP_TIMEOUT_SECONDS
+        + _RESOURCE_LEASE_SAFETY_MARGIN_SECONDS
+    )
+)
+_resource_session_maker = async_session_maker
+_resource_cleanup_tasks: set[asyncio.Task[None]] = set()
+
+
+@dataclass(frozen=True)
+class OAuthAccessSnapshot:
+    access_token: str = field(repr=False)
+    credential_version: int
+
+
+@dataclass(frozen=True)
+class _ResourceCleanupAction:
+    connection_id: uuid.UUID
+    user_id: uuid.UUID
+    credential_version: int
+    lease_token: str
+    kind: Literal["release", "scrub", "disable"]
+
+
+async def _resource_cleanup_confirmed(action: _ResourceCleanupAction) -> bool:
+    """Resolve an uncertain finalizer commit without loading credential material."""
+    async with _resource_session_maker() as readback:
+        row = (
+            await readback.execute(
+                select(
+                    OpenAIOAuthCredential.credential_version,
+                    OpenAIOAuthCredential.status,
+                    OpenAIOAuthCredential.lifecycle_lease_token,
+                    OpenAIOAuthCredential.token_bundle_encrypted.is_(None).label(
+                        "bundle_is_null"
+                    ),
+                ).where(
+                    OpenAIOAuthCredential.connection_id == action.connection_id,
+                    OpenAIOAuthCredential.connection_id.in_(
+                        select(LlmConnection.id).where(
+                            LlmConnection.id == action.connection_id,
+                            LlmConnection.user_id == action.user_id,
+                        )
+                    ),
+                )
+            )
+        ).one_or_none()
+    if row is None or row.credential_version != action.credential_version:
+        # Deletion or a version winner makes this lease/version permanently stale.
+        return True
+    if action.kind == "release":
+        return row.lifecycle_lease_token != action.lease_token
+    if action.kind == "scrub":
+        return row.status == "reauth_required" and row.bundle_is_null is True
+    return row.status == "disabled" and row.lifecycle_lease_token is None
+
+
+async def _run_resource_cleanup(action: _ResourceCleanupAction) -> None:
+    """Finalize using a session owned solely by this secret-free task."""
+    try:
+        async with _resource_session_maker() as cleanup_session:
+            if action.kind == "scrub":
+                await scrub_credential_bundle(
+                    cleanup_session,
+                    action.connection_id,
+                    action.user_id,
+                    expected_version=action.credential_version,
+                    expected_lease_token=action.lease_token,
+                    status="reauth_required",
+                    last_error_code="reauth_required",
+                    return_credential=False,
+                )
+            elif action.kind == "disable":
+                await transition_credential_status(
+                    cleanup_session,
+                    action.connection_id,
+                    action.user_id,
+                    expected_version=action.credential_version,
+                    expected_lease_token=action.lease_token,
+                    status="disabled",
+                    last_error_code="scope_loss",
+                    return_credential=False,
+                )
+            else:
+                await release_credential_lease(
+                    cleanup_session,
+                    action.connection_id,
+                    action.user_id,
+                    expected_version=action.credential_version,
+                    lease_token=action.lease_token,
+                )
+    except BaseException:
+        try:
+            if await _resource_cleanup_confirmed(action):
+                return
+        except BaseException:
+            pass
+        raise
+
+
+def _reap_resource_cleanup(task: asyncio.Task[None]) -> None:
+    _resource_cleanup_tasks.discard(task)
+    try:
+        task.exception()
+    except asyncio.CancelledError:
+        pass
+
+
+async def _await_resource_cleanup(action: _ResourceCleanupAction) -> BaseException | None:
+    """Shield cleanup from repeated cancellation for one absolute wait budget."""
+    task = asyncio.create_task(_run_resource_cleanup(action), name="oauth-resource-cleanup")
+    _resource_cleanup_tasks.add(task)
+    task.add_done_callback(_reap_resource_cleanup)
+    deadline = asyncio.get_running_loop().time() + _RESOURCE_CLEANUP_TIMEOUT_SECONDS
+    cancellation: asyncio.CancelledError | None = None
+    while not task.done():
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            return cancellation or TimeoutError("credential cleanup deadline exceeded")
+        try:
+            await asyncio.wait({asyncio.shield(task)}, timeout=remaining)
+        except asyncio.CancelledError as exc:
+            if cancellation is None:
+                cancellation = exc
+            continue
+    try:
+        task.result()
+    except BaseException as exc:
+        return cancellation or exc
+    return cancellation
 
 
 def _refresh_validity_margin() -> timedelta:
@@ -121,6 +264,125 @@ def _previous_revocation_failure(last_error_code: str | None) -> OAuthLifecycleE
     )
 
 
+@asynccontextmanager
+async def credential_access(
+    session: AsyncSession,
+    connection_id: uuid.UUID,
+    user_id: uuid.UUID,
+    *,
+    now: datetime | None = None,
+    force: bool = False,
+    rejected_version: int | None = None,
+):
+    """Lease the exact active credential version for one resource request."""
+    await refresh_credential(
+        session,
+        connection_id,
+        user_id,
+        now=now,
+        force=force,
+        rejected_version=rejected_version,
+    )
+    current = await get_owned_credential(session, connection_id, user_id)
+    if current is None:
+        await session.rollback()
+        raise LookupError("connection not found")
+    await session.refresh(current)
+    if current.last_error_code == RESOURCE_CLEANUP_PENDING:
+        await session.rollback()
+        raise _race_lost()
+    if current.status != "active":
+        inactive_status = current.status
+        inactive_error = current.last_error_code
+        await session.rollback()
+        raise _inactive(inactive_status, inactive_error)
+    expected_version = current.credential_version
+    await session.rollback()
+
+    lease_token = str(uuid.uuid4())
+    claimed = await claim_credential_lease(
+        session,
+        connection_id,
+        user_id,
+        expected_version=expected_version,
+        lease_token=lease_token,
+        operation="resource",
+        lease_duration=_RESOURCE_LEASE,
+    )
+    if not claimed:
+        raise _race_lost()
+
+    access_token: str | None = None
+    terminal_status: int | None = None
+    terminal_provider_code: str | None = None
+    primary_failure = False
+    try:
+        leased = await get_owned_credential(session, connection_id, user_id)
+        if leased is None:
+            await session.rollback()
+            raise LookupError("connection not found")
+        await session.refresh(leased)
+        if (
+            leased.status != "active"
+            or leased.credential_version != expected_version
+            or leased.lifecycle_lease_token != lease_token
+            or leased.lifecycle_lease_kind != "resource"
+            or leased.token_bundle_encrypted is None
+            or leased.refresh_attempt_id is not None
+        ):
+            await session.rollback()
+            raise _race_lost()
+        try:
+            access_token = decrypt_bundle(leased.token_bundle_encrypted).access_token
+        except ValueError:
+            await session.rollback()
+            raise OAuthLifecycleError(
+                OAuthFailureCode.CORRUPT_TOKEN,
+                "OAuth credential cannot be decrypted",
+                definitive=True,
+            ) from None
+        await session.rollback()
+        try:
+            yield OAuthAccessSnapshot(
+                access_token=access_token,
+                credential_version=expected_version,
+            )
+        except LLMAuthError as exc:
+            terminal_status = exc.status
+            terminal_provider_code = exc.provider_code
+            raise
+        except BaseException:
+            primary_failure = True
+            raise
+    except BaseException:
+        primary_failure = True
+        raise
+    finally:
+        access_token = None
+        if terminal_status == 403 and terminal_provider_code in {
+            "subscription_sharing_user_not_eligible",
+            "subscription_sharing_scope_not_authorized",
+        }:
+            cleanup_kind: Literal["release", "scrub", "disable"] = "disable"
+        elif terminal_status == 401:
+            cleanup_kind = "scrub"
+        else:
+            cleanup_kind = "release"
+        cleanup_error = await _await_resource_cleanup(
+            _ResourceCleanupAction(
+                connection_id=connection_id,
+                user_id=user_id,
+                credential_version=expected_version,
+                lease_token=lease_token,
+                kind=cleanup_kind,
+            )
+        )
+        if cleanup_error is not None and not primary_failure:
+            if isinstance(cleanup_error, asyncio.CancelledError):
+                raise cleanup_error
+            raise LLMUnavailableError("ChatGPT credential cleanup failed") from None
+
+
 @safe_oauth_boundary
 async def refresh_credential(
     session: AsyncSession,
@@ -140,6 +402,9 @@ async def refresh_credential(
         await session.rollback()
         raise LookupError("connection not found")
     await session.refresh(current)
+    if current.last_error_code == RESOURCE_CLEANUP_PENDING:
+        await session.rollback()
+        raise _race_lost()
     if current.status != "active":
         inactive_status = current.status
         inactive_error = current.last_error_code
@@ -183,6 +448,9 @@ async def refresh_credential(
     async with lock:
         current_time = _utc(now or _now())
         credential = await _locked_owned_credential(session, connection_id, user_id)
+        if credential.last_error_code == RESOURCE_CLEANUP_PENDING:
+            await session.rollback()
+            raise _race_lost()
         if credential.status != "active":
             inactive_status = credential.status
             inactive_error = credential.last_error_code
@@ -577,6 +845,7 @@ async def require_reauthorization(
         if credential.refresh_attempt_id is not None or credential.last_error_code in {
             "refresh_outcome_unknown",
             "revocation_pending",
+            RESOURCE_CLEANUP_PENDING,
         }:
             await session.rollback()
             raise _race_lost()
@@ -618,6 +887,7 @@ async def disable_plan_usage(
         if credential.refresh_attempt_id is not None or credential.last_error_code in {
             "refresh_outcome_unknown",
             "revocation_pending",
+            RESOURCE_CLEANUP_PENDING,
         }:
             await session.rollback()
             raise _race_lost()

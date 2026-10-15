@@ -5,6 +5,7 @@ import json
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from typing import Literal, overload
 
 from sqlalchemy import Interval, bindparam, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
@@ -18,6 +19,7 @@ from app.agents.services.crypto import decrypt, encrypt
 CREDENTIAL_STATUSES = frozenset(
     {"active", "disabled", "revoked", "reauth_required"}
 )
+RESOURCE_CLEANUP_PENDING = "resource_cleanup_pending"
 
 
 def sanitize_account_email(value: object) -> str | None:
@@ -220,25 +222,35 @@ async def claim_credential_lease(
     owned_connection = select(LlmConnection.id).where(
         LlmConnection.id == connection_id, LlmConnection.user_id == user_id
     )
-    result = await session.execute(
-        update(OpenAIOAuthCredential)
-        .where(
-            OpenAIOAuthCredential.connection_id == connection_id,
-            OpenAIOAuthCredential.connection_id.in_(owned_connection),
-            OpenAIOAuthCredential.credential_version == expected_version,
-            OpenAIOAuthCredential.status.in_(allowed_statuses),
-            OpenAIOAuthCredential.token_bundle_encrypted.is_not(None),
+    statement = update(OpenAIOAuthCredential).where(
+        OpenAIOAuthCredential.connection_id == connection_id,
+        OpenAIOAuthCredential.connection_id.in_(owned_connection),
+        OpenAIOAuthCredential.credential_version == expected_version,
+        OpenAIOAuthCredential.status.in_(allowed_statuses),
+        OpenAIOAuthCredential.token_bundle_encrypted.is_not(None),
+        or_(
+            OpenAIOAuthCredential.lifecycle_lease_token.is_(None),
+            OpenAIOAuthCredential.lifecycle_lease_expires_at <= database_now,
+        ),
+    )
+    values = {
+        "lifecycle_lease_token": lease_token,
+        "lifecycle_lease_kind": operation,
+        "lifecycle_lease_expires_at": database_expiry,
+    }
+    if operation == "resource":
+        # This durable marker outlives the lease. If the process dies or cleanup
+        # cannot reach the database, an expired lease must not make an outcome-
+        # unknown resource credential reusable.
+        statement = statement.where(
             or_(
-                OpenAIOAuthCredential.lifecycle_lease_token.is_(None),
-                OpenAIOAuthCredential.lifecycle_lease_expires_at <= database_now,
-            ),
+                OpenAIOAuthCredential.last_error_code.is_(None),
+                OpenAIOAuthCredential.last_error_code != RESOURCE_CLEANUP_PENDING,
+            )
         )
-        .values(
-            lifecycle_lease_token=lease_token,
-            lifecycle_lease_kind=operation,
-            lifecycle_lease_expires_at=database_expiry,
-        )
-        .returning(OpenAIOAuthCredential.id)
+        values["last_error_code"] = RESOURCE_CLEANUP_PENDING
+    result = await session.execute(
+        statement.values(**values).returning(OpenAIOAuthCredential.id)
     )
     claimed = result.scalar_one_or_none() is not None
     await session.commit()
@@ -286,6 +298,10 @@ async def begin_refresh_attempt(
             OpenAIOAuthCredential.status == "active",
             OpenAIOAuthCredential.token_bundle_encrypted.is_not(None),
             OpenAIOAuthCredential.refresh_attempt_id.is_(None),
+            or_(
+                OpenAIOAuthCredential.last_error_code.is_(None),
+                OpenAIOAuthCredential.last_error_code != RESOURCE_CLEANUP_PENDING,
+            ),
             or_(
                 OpenAIOAuthCredential.lifecycle_lease_token.is_(None),
                 OpenAIOAuthCredential.lifecycle_lease_expires_at <= database_now,
@@ -395,7 +411,7 @@ async def release_credential_lease(
     owned_connection = select(LlmConnection.id).where(
         LlmConnection.id == connection_id, LlmConnection.user_id == user_id
     )
-    await session.execute(
+    result = await session.execute(
         update(OpenAIOAuthCredential)
         .where(
             OpenAIOAuthCredential.connection_id == connection_id,
@@ -409,7 +425,11 @@ async def release_credential_lease(
             lifecycle_lease_expires_at=None,
             last_error_code=last_error_code,
         )
+        .returning(OpenAIOAuthCredential.id)
     )
+    if result.scalar_one_or_none() is None:
+        await session.rollback()
+        raise StaleCredentialVersionError("credential lease ownership is stale")
     await session.commit()
 
 
@@ -491,6 +511,7 @@ async def rotate_credential(
     return credential
 
 
+@overload
 async def transition_credential_status(
     session: AsyncSession,
     connection_id: uuid.UUID,
@@ -500,7 +521,35 @@ async def transition_credential_status(
     status: str,
     last_error_code: str | None = None,
     expected_lease_token: str | None = None,
-) -> OpenAIOAuthCredential:
+    return_credential: Literal[True] = True,
+) -> OpenAIOAuthCredential: ...
+
+
+@overload
+async def transition_credential_status(
+    session: AsyncSession,
+    connection_id: uuid.UUID,
+    user_id: uuid.UUID,
+    *,
+    expected_version: int,
+    status: str,
+    last_error_code: str | None = None,
+    expected_lease_token: str | None = None,
+    return_credential: Literal[False],
+) -> None: ...
+
+
+async def transition_credential_status(
+    session: AsyncSession,
+    connection_id: uuid.UUID,
+    user_id: uuid.UUID,
+    *,
+    expected_version: int,
+    status: str,
+    last_error_code: str | None = None,
+    expected_lease_token: str | None = None,
+    return_credential: bool = True,
+) -> OpenAIOAuthCredential | None:
     _validate_status(status)
     owned_connection = select(LlmConnection.id).where(
         LlmConnection.id == connection_id, LlmConnection.user_id == user_id
@@ -529,7 +578,11 @@ async def transition_credential_status(
             or_(
                 OpenAIOAuthCredential.last_error_code.is_(None),
                 OpenAIOAuthCredential.last_error_code.not_in(
-                    {"refresh_outcome_unknown", "revocation_pending"}
+                    {
+                        "refresh_outcome_unknown",
+                        "revocation_pending",
+                        RESOURCE_CLEANUP_PENDING,
+                    }
                 ),
             ),
         )
@@ -549,6 +602,8 @@ async def transition_credential_status(
             raise LookupError("connection not found")
         raise StaleCredentialVersionError("credential version is stale")
     await session.commit()
+    if not return_credential:
+        return None
     credential = await get_owned_credential(session, connection_id, user_id)
     if credential is None:  # pragma: no cover - protected by the atomic UPDATE
         raise LookupError("connection not found")
@@ -565,7 +620,8 @@ async def scrub_credential_bundle(
     status: str,
     last_error_code: str | None = None,
     expected_lease_token: str | None = None,
-) -> OpenAIOAuthCredential:
+    return_credential: bool = True,
+) -> OpenAIOAuthCredential | None:
     """Atomically remove all tokens while retaining recovery metadata."""
     _validate_status(status)
     owned_connection = select(LlmConnection.id).where(
@@ -586,6 +642,9 @@ async def scrub_credential_bundle(
             if session.get_bind().dialect.name == "postgresql"
             else func.datetime("now")
         )
+        blocked_error_codes = {"refresh_outcome_unknown", "revocation_pending"}
+        if status != "revoked":
+            blocked_error_codes.add(RESOURCE_CLEANUP_PENDING)
         statement = statement.where(
             or_(
                 OpenAIOAuthCredential.lifecycle_lease_token.is_(None),
@@ -594,9 +653,7 @@ async def scrub_credential_bundle(
             OpenAIOAuthCredential.refresh_attempt_id.is_(None),
             or_(
                 OpenAIOAuthCredential.last_error_code.is_(None),
-                OpenAIOAuthCredential.last_error_code.not_in(
-                    {"refresh_outcome_unknown", "revocation_pending"}
-                ),
+                OpenAIOAuthCredential.last_error_code.not_in(blocked_error_codes),
             ),
         )
     result = await session.execute(
@@ -621,6 +678,8 @@ async def scrub_credential_bundle(
             raise LookupError("connection not found")
         raise StaleCredentialVersionError("credential version is stale")
     await session.commit()
+    if not return_credential:
+        return None
     credential = await get_owned_credential(session, connection_id, user_id)
     if credential is None:  # pragma: no cover - protected by the atomic UPDATE
         raise LookupError("connection not found")
