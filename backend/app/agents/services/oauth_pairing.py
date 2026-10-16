@@ -77,6 +77,7 @@ class PairingView:
     subject: str | None = None
     ext_agent_host_id: str = ""
     returning_client_id: str | None = None
+    failure_code: str | None = None
 
 
 @dataclass(frozen=True)
@@ -503,6 +504,7 @@ async def get_helper_status(
         pairing.result_subject,
         _host_id(),
         returning,
+        pairing.failure_code,
     )
 
 
@@ -519,7 +521,13 @@ async def get_user_status(
     )
     if pairing is None:
         raise PairingUnavailable("pairing_not_available")
-    return PairingView(pairing.id, pairing.state, _aware(pairing.expires_at), pairing.result_subject)
+    return PairingView(
+        pairing.id,
+        pairing.state,
+        _aware(pairing.expires_at),
+        pairing.result_subject,
+        failure_code=pairing.failure_code,
+    )
 
 
 async def register_attempt(

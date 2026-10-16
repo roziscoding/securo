@@ -2641,6 +2641,94 @@
       "empty": {
         "title": "Aucune connexion pour l'instant",
         "subtitle": "Ajoutez une connexion pour pointer Securo vers votre Ollama local, OpenAI, Anthropic, ou tout point de terminaison compatible OpenAI."
+      },
+      "createContinue": "Créer et continuer",
+      "deleteFailed": "Impossible de supprimer la connexion",
+      "chatgpt": {
+        "provider": "ChatGPT",
+        "title": "Se connecter avec ChatGPT",
+        "description": "Exécutez l'utilitaire local pour connecter votre abonnement ChatGPT en toute sécurité. Les jetons ne transitent jamais par ce navigateur.",
+        "httpsRequired": "Cette page Securo doit utiliser HTTPS pour que la commande de l'utilitaire puisse être affichée.",
+        "instructions": "Exécutez la commande sur l'ordinateur depuis lequel vous vous connecterez. Lorsque vous y serez invité, collez séparément le secret à usage unique.",
+        "command": "Commande de l'utilitaire",
+        "secret": "Secret à usage unique",
+        "secretWarning": "Traitez-le comme un mot de passe. Il ne s'affiche que pour cette association et n'est jamais copié automatiquement. Si vous le copiez, il restera dans le presse-papiers jusqu’à ce que vous le remplaciez.",
+        "copyCommand": "Copier la commande de l'utilitaire",
+        "copySecret": "Copier le secret à usage unique",
+        "copied": "Copie effectuée : {{label}}",
+        "copyFailed": "Impossible de copier. Sélectionnez la valeur et copiez-la manuellement.",
+        "chooseModel": "Choisir un modèle ChatGPT",
+        "signIn": "Se connecter",
+        "signInAgain": "Se reconnecter",
+        "reconnect": "Reconnecter",
+        "disconnect": "Déconnecter",
+        "disconnected": "ChatGPT déconnecté ; les paramètres de connexion ont été conservés.",
+        "revokeUnresolved": "Le résultat de la session du fournisseur n'est pas confirmé. Aucune autre mesure n'a été prise.",
+        "testSuccess": "La connexion ChatGPT fonctionne.",
+        "testFailed": "Le test de connexion ChatGPT a échoué.",
+        "noAccount": "Aucune adresse e-mail disponible pour le compte",
+        "expires": "L'accès est renouvelé automatiquement ; l'accès actuel expire le {{date}}.",
+        "status": {
+          "idle": "Prêt",
+          "starting": "Création d'une association sécurisée…",
+          "pending": "En attente de l'utilitaire…",
+          "attempt_registered": "Connexion lancée dans l'utilitaire…",
+          "completing": "Validation de la connexion…",
+          "completed": "Connecté à ChatGPT.",
+          "failed": "Échec de l'association.",
+          "cancelled": "L'association a été annulée.",
+          "expired": "L'association a expiré. Recommencez.",
+          "network": "Securo est temporairement inaccessible. Nouvelle tentative…",
+          "reconciling": "Confirmation de l’annulation…"
+        },
+        "credential": {
+          "not_connected": "Non connecté",
+          "active": "Connecté",
+          "disabled": "Désactivé",
+          "revoked": "Déconnecté",
+          "reauth_required": "Connexion requise"
+        },
+        "errors": {
+          "transient": "Une erreur temporaire du fournisseur s'est produite. La nouvelle tentative est automatique.",
+          "revoked": "La session ChatGPT a été révoquée. Reconnectez-vous.",
+          "scope_loss": "L'accès requis au compte est manquant. Reconnectez-vous.",
+          "corrupt_token": "Les identifiants enregistrés ne sont pas valides. Reconnectez-vous.",
+          "reauth_required": "Reconnectez-vous pour continuer.",
+          "too_early": "Veuillez patienter avant de réessayer.",
+          "race_lost": "Une autre mise à jour s'est terminée en premier. Actualisez la page et réessayez.",
+          "redirect_rejected": "Le rappel local a été rejeté. Relancez l'association.",
+          "malformed_response": "Le fournisseur a renvoyé une réponse non valide. Relancez l'association.",
+          "inactive": "Cette session est inactive. Reconnectez-vous.",
+          "invalid_client": "L'enregistrement de l'utilitaire n'est pas valide. Relancez l'association.",
+          "expired": "L'association a expiré. Recommencez.",
+          "refresh_outcome_unknown": "Le résultat du renouvellement des identifiants est inconnu. Patientez avant de réessayer.",
+          "revocation_pending": "La révocation de la session est toujours en attente.",
+          "resource_cleanup_pending": "Le nettoyage sécurisé est toujours en attente.",
+          "credential_busy": "Une opération de maintenance des identifiants est en cours. Réessayez dans quelques instants.",
+          "start_outcome_unknown": "Le résultat de la création de l'association est inconnu. Actualisez la page avant de réessayer.",
+          "unknown": "Le résultat d'une opération sécurisée sur le compte est inconnu. Actualisez la page avant de réessayer.",
+          "invalid": "La réponse du fournisseur n'a pas pu être acceptée. Relancez l'association.",
+          "reauth": "Reconnectez-vous pour continuer.",
+          "busy": "Une opération de maintenance des identifiants est en cours. Réessayez dans quelques instants."
+        },
+        "confirm": {
+          "reconnect": {
+            "title": "Reconnecter ChatGPT ?",
+            "description": "Cette action révoque la session actuelle du fournisseur avant de lancer une nouvelle association sécurisée pour « {{name}} ».",
+            "action": "Révoquer et reconnecter"
+          },
+          "disconnect": {
+            "title": "Déconnecter ChatGPT ?",
+            "description": "Cette action révoque la session du fournisseur, mais conserve « {{name}} » et ses paramètres.",
+            "action": "Déconnecter"
+          },
+          "delete": {
+            "title": "Supprimer la connexion ?",
+            "description": "Si la connexion ChatGPT est active, Securo révoque la session du fournisseur avant de supprimer « {{name}} ». Cette action est irréversible.",
+            "action": "Supprimer"
+          }
+        },
+        "reconcileFailed": "Impossible de confirmer l’annulation. Vérifiez la connexion et réessayez."
       }
     }
   },

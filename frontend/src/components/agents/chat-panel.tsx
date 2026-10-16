@@ -424,7 +424,7 @@ function ChatEmptyState({ agent, onPick }: { agent: Agent; onPick: (text: string
   // raw provider/model fields or instance default).
   const { data: connections } = useQuery({
     queryKey: ['agent-connections'],
-    queryFn: () => agents.connections.list(),
+    queryFn: ({ signal }) => agents.connections.list(signal),
     staleTime: 1000 * 60,
   })
   const connectorLabel = useMemo<string | null>(() => {

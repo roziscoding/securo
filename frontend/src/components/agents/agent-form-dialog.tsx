@@ -45,7 +45,7 @@ export function AgentFormDialog({ open, onOpenChange, agent }: Props) {
 
   const { data: connections } = useQuery({
     queryKey: ['agent-connections'],
-    queryFn: () => agents.connections.list(),
+    queryFn: ({ signal }) => agents.connections.list(signal),
     enabled: open,
   })
 

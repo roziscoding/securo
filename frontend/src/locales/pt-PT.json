@@ -2603,6 +2603,94 @@
       "empty": {
         "title": "Nenhuma ligação ainda",
         "subtitle": "Adiciona uma ligação para apontar o Securo para o teu Ollama local, OpenAI, Anthropic ou qualquer endpoint compatível com OpenAI."
+      },
+      "createContinue": "Criar e continuar",
+      "deleteFailed": "Não foi possível remover a ligação",
+      "chatgpt": {
+        "provider": "ChatGPT",
+        "title": "Iniciar sessão com o ChatGPT",
+        "description": "Executa o assistente local para ligares a tua subscrição do ChatGPT em segurança. Os tokens nunca passam por este navegador.",
+        "httpsRequired": "Esta página do Securo tem de usar HTTPS para que o comando do assistente possa ser apresentado.",
+        "instructions": "Executa o comando no computador onde vais iniciar sessão. Quando te for pedido, cola separadamente o segredo de utilização única.",
+        "command": "Comando do assistente",
+        "secret": "Segredo de utilização única",
+        "secretWarning": "Trata-o como uma palavra-passe. É apresentado apenas para este emparelhamento e nunca é copiado automaticamente. Se o copiares, permanecerá na área de transferência até o substituíres.",
+        "copyCommand": "Copiar comando do assistente",
+        "copySecret": "Copiar segredo de utilização única",
+        "copied": "{{label}} copiado",
+        "copyFailed": "Não foi possível copiar. Seleciona o valor e copia-o manualmente.",
+        "chooseModel": "Escolhe um modelo do ChatGPT",
+        "signIn": "Iniciar sessão",
+        "signInAgain": "Iniciar sessão novamente",
+        "reconnect": "Voltar a ligar",
+        "disconnect": "Desligar",
+        "disconnected": "ChatGPT desligado; as definições da ligação foram mantidas.",
+        "revokeUnresolved": "O resultado da sessão no fornecedor não foi confirmado. Não foi efetuada nenhuma outra ação.",
+        "testSuccess": "A ligação ao ChatGPT está a funcionar.",
+        "testFailed": "O teste da ligação ao ChatGPT falhou.",
+        "noAccount": "E-mail da conta indisponível",
+        "expires": "O acesso é renovado automaticamente; o acesso atual expira em {{date}}.",
+        "status": {
+          "idle": "Pronto",
+          "starting": "A criar um emparelhamento seguro…",
+          "pending": "À espera do assistente…",
+          "attempt_registered": "Início de sessão iniciado no assistente…",
+          "completing": "A validar a ligação…",
+          "completed": "Ligado ao ChatGPT.",
+          "failed": "O emparelhamento falhou.",
+          "cancelled": "O emparelhamento foi cancelado.",
+          "expired": "O emparelhamento expirou. Começa novamente.",
+          "network": "O Securo está temporariamente inacessível. A tentar novamente…",
+          "reconciling": "A confirmar o cancelamento…"
+        },
+        "credential": {
+          "not_connected": "Não ligado",
+          "active": "Ligado",
+          "disabled": "Desativado",
+          "revoked": "Desligado",
+          "reauth_required": "É necessário iniciar sessão"
+        },
+        "errors": {
+          "transient": "Ocorreu um erro temporário no fornecedor. A nova tentativa é automática.",
+          "revoked": "A sessão do ChatGPT foi revogada. Inicia sessão novamente.",
+          "scope_loss": "Falta o acesso necessário à conta. Inicia sessão novamente.",
+          "corrupt_token": "As credenciais guardadas são inválidas. Inicia sessão novamente.",
+          "reauth_required": "Inicia sessão novamente para continuar.",
+          "too_early": "Aguarda antes de tentares novamente.",
+          "race_lost": "Outra atualização foi concluída primeiro. Atualiza a página e tenta novamente.",
+          "redirect_rejected": "A chamada de retorno local foi rejeitada. Reinicia o emparelhamento.",
+          "malformed_response": "O fornecedor devolveu uma resposta inválida. Reinicia o emparelhamento.",
+          "inactive": "Esta sessão está inativa. Inicia sessão novamente.",
+          "invalid_client": "O registo do assistente é inválido. Reinicia o emparelhamento.",
+          "expired": "O emparelhamento expirou. Começa novamente.",
+          "refresh_outcome_unknown": "O resultado da renovação das credenciais é desconhecido. Aguarda antes de tentares novamente.",
+          "revocation_pending": "A revogação da sessão ainda está pendente.",
+          "resource_cleanup_pending": "A limpeza segura ainda está pendente.",
+          "credential_busy": "A manutenção das credenciais está em curso. Tenta novamente dentro de instantes.",
+          "start_outcome_unknown": "O resultado da criação do emparelhamento é desconhecido. Atualiza a página antes de tentares novamente.",
+          "unknown": "O resultado de uma operação segura da conta é desconhecido. Atualiza a página antes de tentares novamente.",
+          "invalid": "Não foi possível aceitar a resposta do fornecedor. Reinicia o emparelhamento.",
+          "reauth": "Inicia sessão novamente para continuar.",
+          "busy": "A manutenção das credenciais está em curso. Tenta novamente dentro de instantes."
+        },
+        "confirm": {
+          "reconnect": {
+            "title": "Voltar a ligar o ChatGPT?",
+            "description": "Isto revoga a sessão atual no fornecedor antes de iniciar um novo emparelhamento seguro para “{{name}}”.",
+            "action": "Revogar e voltar a ligar"
+          },
+          "disconnect": {
+            "title": "Desligar o ChatGPT?",
+            "description": "Isto revoga a sessão no fornecedor, mas mantém “{{name}}” e as respetivas definições.",
+            "action": "Desligar"
+          },
+          "delete": {
+            "title": "Eliminar ligação?",
+            "description": "Numa ligação ativa ao ChatGPT, o Securo revoga a sessão no fornecedor antes de eliminar “{{name}}”. Esta ação não pode ser anulada.",
+            "action": "Eliminar"
+          }
+        },
+        "reconcileFailed": "Não foi possível confirmar o cancelamento. Verifique a ligação e tente novamente."
       }
     },
     "newConversation": "Nova conversa",

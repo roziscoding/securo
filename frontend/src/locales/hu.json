@@ -2637,6 +2637,94 @@
       "empty": {
         "title": "Még nincs kapcsolat",
         "subtitle": "Adj hozzá egy kapcsolatot, hogy a Securo a helyi Ollamádat, az OpenAI-t, az Anthropicot vagy bármilyen OpenAI-kompatibilis végpontot használhassa."
+      },
+      "createContinue": "Létrehozás és folytatás",
+      "deleteFailed": "Nem sikerült eltávolítani a kapcsolatot",
+      "chatgpt": {
+        "provider": "ChatGPT",
+        "title": "Bejelentkezés ChatGPT-vel",
+        "description": "Futtasd a helyi segédprogramot, hogy biztonságosan csatlakoztasd ChatGPT-előfizetésedet. A tokenek soha nem kerülnek át ezen a böngészőn.",
+        "httpsRequired": "Ezt a Securo-oldalt HTTPS-en kell megnyitni, hogy megjelenhessen a segédprogram parancsa.",
+        "instructions": "Futtasd a parancsot azon a számítógépen, amelyen bejelentkezel. Amikor a rendszer kéri, külön illeszd be az egyszer használatos titkos kódot.",
+        "command": "Segédprogram parancsa",
+        "secret": "Egyszer használatos titkos kód",
+        "secretWarning": "Kezeld jelszóként. Csak ehhez a párosításhoz jelenik meg, és soha nem másolódik automatikusan. Ha kimásolod, a vágólapon marad, amíg le nem cseréled.",
+        "copyCommand": "Segédprogram parancsának másolása",
+        "copySecret": "Egyszer használatos titkos kód másolása",
+        "copied": "{{label}} másolva",
+        "copyFailed": "Nem sikerült másolni. Jelöld ki az értéket, és másold ki kézzel.",
+        "chooseModel": "ChatGPT-modell kiválasztása",
+        "signIn": "Bejelentkezés",
+        "signInAgain": "Jelentkezz be újra",
+        "reconnect": "Újracsatlakozás",
+        "disconnect": "Leválasztás",
+        "disconnected": "ChatGPT leválasztva; a kapcsolat beállításai megmaradtak.",
+        "revokeUnresolved": "A szolgáltatói munkamenet eredménye nem erősíthető meg. Nem történt további művelet.",
+        "testSuccess": "A ChatGPT-kapcsolat működik.",
+        "testFailed": "A ChatGPT-kapcsolat tesztje sikertelen.",
+        "noAccount": "A fiók e-mail-címe nem érhető el",
+        "expires": "A hozzáférés automatikusan megújul; a jelenlegi hozzáférés lejárata: {{date}}.",
+        "status": {
+          "idle": "Készen áll",
+          "starting": "Biztonságos párosítás létrehozása…",
+          "pending": "Várakozás a segédprogramra…",
+          "attempt_registered": "A bejelentkezés elindult a segédprogramban…",
+          "completing": "Kapcsolat ellenőrzése…",
+          "completed": "Csatlakoztatva a ChatGPT-hez.",
+          "failed": "A párosítás sikertelen.",
+          "cancelled": "A párosítást megszakították.",
+          "expired": "A párosítás lejárt. Indítsd újra.",
+          "network": "A Securo átmenetileg nem érhető el. Újrapróbálkozás…",
+          "reconciling": "Megszakítás megerősítése…"
+        },
+        "credential": {
+          "not_connected": "Nincs csatlakoztatva",
+          "active": "Csatlakoztatva",
+          "disabled": "Letiltva",
+          "revoked": "Leválasztva",
+          "reauth_required": "Bejelentkezés szükséges"
+        },
+        "errors": {
+          "transient": "Átmeneti szolgáltatói hiba történt. Az újrapróbálkozás automatikus.",
+          "revoked": "A ChatGPT-munkamenetet visszavonták. Jelentkezz be újra.",
+          "scope_loss": "Hiányzik a szükséges fiókhozzáférés. Jelentkezz be újra.",
+          "corrupt_token": "A tárolt hitelesítő adatok érvénytelenek. Jelentkezz be újra.",
+          "reauth_required": "A folytatáshoz jelentkezz be újra.",
+          "too_early": "Várj egy kicsit, mielőtt újrapróbálkozol.",
+          "race_lost": "Egy másik frissítés előbb befejeződött. Frissítsd az oldalt, és próbáld újra.",
+          "redirect_rejected": "A helyi visszahívást elutasították. Indítsd újra a párosítást.",
+          "malformed_response": "A szolgáltató érvénytelen választ küldött. Indítsd újra a párosítást.",
+          "inactive": "Ez a munkamenet inaktív. Jelentkezz be újra.",
+          "invalid_client": "A segédprogram regisztrációja érvénytelen. Indítsd újra a párosítást.",
+          "expired": "A párosítás lejárt. Indítsd újra.",
+          "refresh_outcome_unknown": "A hitelesítő adatok frissítésének eredménye ismeretlen. Várj, mielőtt újrapróbálkozol.",
+          "revocation_pending": "A munkamenet visszavonása még folyamatban van.",
+          "resource_cleanup_pending": "A biztonságos törlés még folyamatban van.",
+          "credential_busy": "A hitelesítő adatok karbantartása folyamatban van. Próbáld újra hamarosan.",
+          "start_outcome_unknown": "A párosítás létrehozásának eredménye ismeretlen. Frissítsd az oldalt, mielőtt újrapróbálkozol.",
+          "unknown": "Egy biztonságos fiókművelet eredménye ismeretlen. Frissítsd az oldalt, mielőtt újrapróbálkozol.",
+          "invalid": "A szolgáltató válasza nem fogadható el. Indítsd újra a párosítást.",
+          "reauth": "A folytatáshoz jelentkezz be újra.",
+          "busy": "A hitelesítő adatok karbantartása folyamatban van. Próbáld újra hamarosan."
+        },
+        "confirm": {
+          "reconnect": {
+            "title": "Újracsatlakoztatod a ChatGPT-t?",
+            "description": "Ez visszavonja a jelenlegi szolgáltatói munkamenetet, mielőtt új biztonságos párosítás indulna ehhez: „{{name}}”.",
+            "action": "Visszavonás és újracsatlakozás"
+          },
+          "disconnect": {
+            "title": "Leválasztod a ChatGPT-t?",
+            "description": "Ez visszavonja a szolgáltatói munkamenetet, de megtartja a(z) „{{name}}” kapcsolatot és annak beállításait.",
+            "action": "Leválasztás"
+          },
+          "delete": {
+            "title": "Törlöd a kapcsolatot?",
+            "description": "Aktív ChatGPT-kapcsolat esetén a Securo visszavonja a szolgáltatói munkamenetet a(z) „{{name}}” törlése előtt. Ez nem vonható vissza.",
+            "action": "Törlés"
+          }
+        },
+        "reconcileFailed": "A megszakítás nem erősíthető meg. Ellenőrizd a kapcsolatot, majd próbáld újra."
       }
     }
   },

@@ -2637,6 +2637,94 @@
       "empty": {
         "title": "No connections yet",
         "subtitle": "Add a connection to point Securo at your local Ollama, OpenAI, Anthropic, or any OpenAI-compatible endpoint."
+      },
+      "createContinue": "Create and continue",
+      "deleteFailed": "Could not remove connection",
+      "chatgpt": {
+        "provider": "ChatGPT",
+        "title": "Sign in with ChatGPT",
+        "description": "Run the local helper to connect your ChatGPT subscription securely. Tokens never pass through this browser.",
+        "httpsRequired": "This Securo page must use HTTPS before the helper command can be shown.",
+        "instructions": "Run the command on the computer where you will sign in. When prompted, paste the one-time secret separately.",
+        "command": "Helper command",
+        "secret": "One-time secret",
+        "secretWarning": "Treat this like a password. It is shown only for this pairing and is never copied automatically. If you copy it, it remains in your clipboard until you replace it.",
+        "copyCommand": "Copy helper command",
+        "copySecret": "Copy one-time secret",
+        "copied": "{{label}} copied",
+        "copyFailed": "Could not copy. Select the value and copy it manually.",
+        "chooseModel": "Choose a ChatGPT model",
+        "signIn": "Sign in",
+        "signInAgain": "Sign in again",
+        "reconnect": "Reconnect",
+        "disconnect": "Disconnect",
+        "disconnected": "ChatGPT disconnected; connection settings were kept.",
+        "revokeUnresolved": "The provider session outcome is not confirmed. No further action was taken.",
+        "testSuccess": "ChatGPT connection is working.",
+        "testFailed": "ChatGPT connection test failed.",
+        "noAccount": "No account email available",
+        "expires": "Access refreshes automatically; current access expires {{date}}.",
+        "status": {
+          "idle": "Ready",
+          "starting": "Creating a secure pairing…",
+          "pending": "Waiting for the helper…",
+          "attempt_registered": "Sign-in started in the helper…",
+          "completing": "Validating the connection…",
+          "completed": "Connected to ChatGPT.",
+          "failed": "Pairing failed.",
+          "cancelled": "Pairing was cancelled.",
+          "expired": "Pairing expired. Start again.",
+          "network": "Securo is temporarily unreachable. Retrying…",
+          "reconciling": "Confirming cancellation…"
+        },
+        "credential": {
+          "not_connected": "Not connected",
+          "active": "Connected",
+          "disabled": "Disabled",
+          "revoked": "Disconnected",
+          "reauth_required": "Sign-in required"
+        },
+        "errors": {
+          "transient": "A temporary provider error occurred. Retry is automatic.",
+          "revoked": "The ChatGPT session was revoked. Sign in again.",
+          "scope_loss": "Required account access is missing. Sign in again.",
+          "corrupt_token": "Stored credentials are invalid. Sign in again.",
+          "reauth_required": "Sign in again to continue.",
+          "too_early": "Please wait before retrying.",
+          "race_lost": "Another update completed first. Refresh and retry.",
+          "redirect_rejected": "The local callback was rejected. Restart pairing.",
+          "malformed_response": "The provider returned an invalid response. Restart pairing.",
+          "inactive": "This session is inactive. Sign in again.",
+          "invalid_client": "The helper registration is invalid. Restart pairing.",
+          "expired": "The pairing expired. Start again.",
+          "refresh_outcome_unknown": "Credential refresh has an unknown outcome. Wait before retrying.",
+          "revocation_pending": "Session revocation is still pending.",
+          "resource_cleanup_pending": "Secure cleanup is still pending.",
+          "credential_busy": "Credential maintenance is in progress. Try again shortly.",
+          "start_outcome_unknown": "Pairing creation has an unknown outcome. Refresh before retrying.",
+          "unknown": "A secure account operation has an unknown outcome. Refresh before retrying.",
+          "invalid": "The provider response could not be accepted. Restart pairing.",
+          "reauth": "Sign in again to continue.",
+          "busy": "Credential maintenance is in progress. Try again shortly."
+        },
+        "confirm": {
+          "reconnect": {
+            "title": "Reconnect ChatGPT?",
+            "description": "This revokes the current provider session before starting a new secure pairing for “{{name}}”.",
+            "action": "Revoke and reconnect"
+          },
+          "disconnect": {
+            "title": "Disconnect ChatGPT?",
+            "description": "This revokes the provider session but keeps “{{name}}” and its settings.",
+            "action": "Disconnect"
+          },
+          "delete": {
+            "title": "Delete connection?",
+            "description": "For an active ChatGPT connection, Securo revokes the provider session before deleting “{{name}}”. This cannot be undone.",
+            "action": "Delete"
+          }
+        },
+        "reconcileFailed": "Could not confirm cancellation. Check the connection and try again."
       }
     }
   },

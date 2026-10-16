@@ -5,24 +5,123 @@ import uuid
 import asyncio
 import types
 from datetime import datetime, timedelta, timezone
+from typing import cast
 
 import pytest
 from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.requests import Request
 
 from app.agents.api.oauth_pairing import (
     MAX_PAIRING_BODY,
     _secret,
+    _status,
     _strict_body,
+    helper_bootstrap,
     helper_status,
+    user_pairing_status,
 )
-from app.agents.schemas.oauth_pairing import CompletionRequest
+from app.agents.schemas.oauth_pairing import CompletionRequest, PairingStatus
 from app.agents.models.oauth_credential import OpenAIOAuthCredential
 from app.agents.models.connection import LlmConnection
 from app.agents.models.oauth_pairing import OpenAIOAuthPairing
 from app.agents.services import oauth_pairing
 from app.agents.config import MAX_OAUTH_TIMEOUT_SECONDS
+from app.main import app
+from app.models.user import User
+
+
+def test_pairing_status_contract_is_closed_and_sanitizes_failure_codes():
+    now = datetime.now(timezone.utc)
+    view = oauth_pairing.PairingView(uuid.uuid4(), "attempt_registered", now, failure_code="transient")
+
+    assert _status(view, include_failure=True).failure_code == "transient"
+    assert _status(view).failure_code is None
+    assert _status(
+        oauth_pairing.PairingView(view.id, "failed", now, failure_code="token=secret"),
+        include_failure=True,
+    ).failure_code is None
+    with pytest.raises(ValueError):
+        PairingStatus.model_validate(
+            {"pairing_id": view.id, "state": "unknown", "expires_at": now}
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["user", "helper_status", "helper_bootstrap"])
+async def test_status_routes_fail_closed_on_hostile_persisted_state(
+    route, monkeypatch, caplog
+):
+    sentinel = "hostile-persisted-state-sentinel"
+    view = oauth_pairing.PairingView(
+        uuid.uuid4(), sentinel, datetime.now(timezone.utc), failure_code=sentinel
+    )
+
+    async def hostile_view(*_args, **_kwargs):
+        return view
+
+    monkeypatch.setattr(
+        oauth_pairing,
+        "get_user_status" if route == "user" else "get_helper_status",
+        hostile_view,
+    )
+
+    with pytest.raises(Exception) as caught:
+        if route == "user":
+            await user_pairing_status(
+                uuid.uuid4(), view.id, cast(AsyncSession, object()),
+                cast(User, types.SimpleNamespace(id=uuid.uuid4())),
+            )
+        elif route == "helper_status":
+            await helper_status(view.id, "s" * 43, object())
+        else:
+            await helper_bootstrap(view.id, "s" * 43, object())
+
+    assert getattr(caught.value, "status_code", None) == 404
+    assert getattr(caught.value, "detail", None) == {"code": "pairing_not_available"}
+    assert sentinel not in repr(caught.value)
+    assert sentinel not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_user_status_sanitizes_hostile_persisted_failure_code(monkeypatch, caplog):
+    sentinel = "hostile-persisted-failure-sentinel"
+    view = oauth_pairing.PairingView(
+        uuid.uuid4(), "failed", datetime.now(timezone.utc), failure_code=sentinel
+    )
+
+    async def hostile_view(*_args, **_kwargs):
+        return view
+
+    monkeypatch.setattr(oauth_pairing, "get_user_status", hostile_view)
+    result = await user_pairing_status(
+        uuid.uuid4(), view.id, cast(AsyncSession, object()),
+        cast(User, types.SimpleNamespace(id=uuid.uuid4())),
+    )
+
+    assert result.failure_code is None
+    assert sentinel not in result.model_dump_json()
+    assert sentinel not in caplog.text
+
+
+def test_pairing_status_openapi_is_closed_sanitized_and_secret_free():
+    schema = app.openapi()["components"]["schemas"]["PairingStatus"]
+    assert schema["additionalProperties"] is False
+    assert set(schema["properties"]) == {
+        "pairing_id", "state", "expires_at", "failure_code"
+    }
+    assert schema["properties"]["state"]["enum"] == [
+        "pending", "attempt_registered", "completing", "completed", "cancelled", "failed"
+    ]
+    failure_schema = schema["properties"]["failure_code"]
+    failure_enum = next(item["enum"] for item in failure_schema["anyOf"] if "enum" in item)
+    assert set(failure_enum) == {
+        "transient", "revoked", "scope_loss", "corrupt_token", "reauth_required",
+        "too_early", "race_lost", "redirect_rejected", "malformed_response", "inactive",
+        "invalid_client", "expired", "refresh_outcome_unknown", "revocation_pending",
+        "resource_cleanup_pending", "credential_busy", "start_outcome_unknown",
+    }
+    assert "secret" not in str(schema).lower()
 
 
 @pytest.mark.asyncio
