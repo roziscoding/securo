@@ -92,6 +92,10 @@ ALLOWLIST: dict[tuple[str, str], str] = {
     ("DELETE", "/api/agents/connections/{conn_id}"): "the requester's own LLM credentials",
     ("POST", "/api/agents/connections/{conn_id}/revoke"): "revokes the requester's own LLM credential",
     ("POST", "/api/agents/connections/{conn_id}/test"): "probes the requester's own credential",
+    ("POST", "/api/agents/connections/{connection_id}/chatgpt/pairings"): "starts the requester's own credential pairing",
+    ("DELETE", "/api/agents/connections/{connection_id}/chatgpt/pairings/{pairing_id}"): "cancels the requester's own credential pairing",
+    ("POST", "/api/agents/chatgpt/pairings/{pairing_id}/attempt"): "one-use pairing-secret authentication, before OAuth",
+    ("POST", "/api/agents/chatgpt/pairings/{pairing_id}/complete"): "one-use pairing-secret authentication, after OAuth",
     # Global, not workspace data: FX rates are shared by the whole instance.
     # Any authenticated user may refresh them, and nothing per-workspace is
     # touched. Flagged here so a future rate limit or admin floor is a
@@ -113,6 +117,10 @@ WORKSPACE_READ_ROUTES = {
         "/api/transactions/import/preview", "/api/assets/import/preview",
         "/api/rules/preview", "/api/export/backup",
     )
+}
+PAIRING_SECRET_ROUTES = {
+    ("POST", "/api/agents/chatgpt/pairings/{pairing_id}/attempt"),
+    ("POST", "/api/agents/chatgpt/pairings/{pairing_id}/complete"),
 }
 
 
@@ -177,6 +185,9 @@ def test_a_mutating_route_declares_a_permission_decision(method, path):
         assert not names & WRITE_GATES, "remove the redundant write-gate exemption"
         if (method, path) in PUBLIC_ROUTES:
             assert "current_user_dependency" not in names, "login cannot require an existing user"
+        elif (method, path) in PAIRING_SECRET_ROUTES:
+            assert "_secret" in names, "helper writes require the exact pairing-secret dependency"
+            assert "current_user_dependency" not in names, "the local helper has no user JWT"
         else:
             assert "current_user_dependency" in names, "the exemption still requires authentication"
         if (method, path) in WORKSPACE_READ_ROUTES:
@@ -197,7 +208,7 @@ def test_the_allowlist_has_no_stale_entries():
     reusing the path."""
     stale = sorted(set(ALLOWLIST) - set(ALL_MUTATING))
     assert stale == [], f"allowlist entries matching no route: {stale}"
-    assert PUBLIC_ROUTES | WORKSPACE_READ_ROUTES <= set(ALLOWLIST)
+    assert PUBLIC_ROUTES | WORKSPACE_READ_ROUTES | PAIRING_SECRET_ROUTES <= set(ALLOWLIST)
 
 
 def test_nothing_allowlisted_is_already_gated():

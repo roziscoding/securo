@@ -216,6 +216,7 @@ if os.getenv("AGENTS_ENABLED", "false").strip().lower() in ("1", "true", "yes", 
         from app.agents.api.info import router as agents_info_router
         from app.agents.api.agents import router as agents_router
         from app.agents.api.connections import router as agents_connections_router
+        from app.agents.api.oauth_pairing import router as agents_oauth_pairing_router
         from app.agents.api.conversations import router as agents_conversations_router
         from app.agents.api.chat import router as agents_chat_router
         from app.agents.api.knowledge import router as agents_knowledge_router
@@ -225,6 +226,7 @@ if os.getenv("AGENTS_ENABLED", "false").strip().lower() in ("1", "true", "yes", 
         # mcp-tokens) BEFORE the generic agents router so paths like
         # /api/agents/connections don't get captured by /api/agents/{agent_id}.
         app.include_router(agents_info_router)
+        app.include_router(agents_oauth_pairing_router)
         app.include_router(agents_connections_router)
         app.include_router(agents_conversations_router)
         app.include_router(agents_mcp_tokens_router)

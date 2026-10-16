@@ -999,8 +999,8 @@ async def test_malformed_json_scrubs_response_request_and_traceback_secrets():
     assert exc_info.value.__cause__ is None
     assert exc_info.value.__context__ is None
     assert response.content == b""
-    assert response.request.content == b""
-    assert "authorization" not in response.request.headers
+    with pytest.raises(RuntimeError):
+        _ = response.request
     retained = _production_traceback_text(exc_info.value)
     assert request_secret not in retained
     assert provider_secret not in retained
@@ -1736,9 +1736,8 @@ async def test_successful_token_paths_scrub_bounded_responses_and_parsed_payload
         assert response.content == b""
         assert dict(response.headers) == {}
         assert response.extensions == {}
-        assert response.request.content == b""
-        assert dict(response.request.headers) == {}
-        assert response.request.extensions == {}
+        with pytest.raises(RuntimeError):
+            _ = response.request
 
 
 @pytest.mark.asyncio
@@ -2762,7 +2761,7 @@ async def test_owned_transport_closes_on_every_request_outcome(outcome, monkeypa
                 raise asyncio.CancelledError()
             if outcome == "soft_limit":
                 raise self.limit
-            return httpx.Response(200, content=b"{}")
+            return httpx.Response(200, stream=httpx.ByteStream(b"{}"), request=request)
 
         async def aclose(self):
             self.closed = True

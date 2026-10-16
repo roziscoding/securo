@@ -1,4 +1,5 @@
 """Focused regressions for the OAuth lifecycle contract."""
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 
@@ -57,6 +58,22 @@ def test_decrypt_bundle_rejects_duplicate_members(monkeypatch):
         oauth_credentials.decrypt_bundle("ciphertext")
 
 
+def test_exception_scrub_is_bounded_for_deep_and_wide_graphs():
+    sentinel = "bounded-backend-scrub-sentinel"
+    deep: object = sentinel
+    for _ in range(3000):
+        deep = [deep]
+    wide: list[object] = [bytearray(sentinel.encode()) for _ in range(10_000)]
+    error = RuntimeError({"deep": deep, "wide": wide})
+
+    openai_oauth._discard_exception_secrets(error)
+
+    assert error.args == ()
+    assert error.__dict__ == {}
+    assert deep == []
+    assert wide == []
+
+
 def test_exception_scrub_erases_cyclic_foreign_holders_retained_externally():
     class Holder:
         __slots__ = ("secret", "cycle", "__dict__")
@@ -85,6 +102,65 @@ def test_exception_scrub_erases_cyclic_foreign_holders_retained_externally():
     assert other.secret is None
     assert other.cycle is None
     assert error.args == ()
+
+
+@pytest.mark.asyncio
+async def test_oauth_boundary_is_total_against_hostile_exception_accessors():
+    sentinel = "retained-bearer-sentinel"
+
+    class Hostile(RuntimeError):
+        __slots__ = ("retained",)
+
+        def __getattribute__(self, name):
+            if name in {"__cause__", "__context__", "__traceback__", "args", "__dict__"}:
+                raise RuntimeError("hostile-accessor-sentinel")
+            return RuntimeError.__getattribute__(self, name)
+
+        def __setattr__(self, name, value):
+            if name in {"__cause__", "__context__", "__traceback__", "args", "__dict__"}:
+                raise RuntimeError("hostile-accessor-sentinel")
+            return RuntimeError.__setattr__(self, name, value)
+
+    retained = Hostile(sentinel)
+    retained.retained = {"bearer": sentinel}
+
+    @openai_oauth.safe_oauth_boundary
+    async def fail():
+        nested = RuntimeError({"nested": sentinel})
+        BaseException.__dict__["__cause__"].__set__(nested, retained)
+        BaseException.__dict__["__context__"].__set__(retained, nested)
+        raise retained
+
+    with pytest.raises(RuntimeError, match="^OAuth operation failed safely$") as caught:
+        await fail()
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert BaseException.__dict__["args"].__get__(retained, Hostile) == ()
+    assert retained.retained is None
+
+
+@pytest.mark.asyncio
+async def test_oauth_boundary_replaces_hostile_cancellation_cleanly():
+    class HostileCancellation(asyncio.CancelledError):
+        def __getattribute__(self, name):
+            if name in {"__cause__", "__context__", "__traceback__", "args", "__dict__"}:
+                raise RuntimeError("hostile-cancellation-accessor")
+            return asyncio.CancelledError.__getattribute__(self, name)
+
+        def __setattr__(self, name, value):
+            if name in {"__cause__", "__context__", "__traceback__", "args", "__dict__"}:
+                raise RuntimeError("hostile-cancellation-accessor")
+            return asyncio.CancelledError.__setattr__(self, name, value)
+
+    @openai_oauth.safe_oauth_boundary
+    async def cancel():
+        raise HostileCancellation("cancel-secret")
+
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await cancel()
+    assert type(caught.value) is asyncio.CancelledError
+    assert caught.value.args == ()
+    assert caught.value.__cause__ is None
 
 
 @pytest.mark.asyncio
