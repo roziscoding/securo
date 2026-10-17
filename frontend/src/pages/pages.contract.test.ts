@@ -30,8 +30,10 @@ const paths = Object.keys(modules)
 // anywhere in the tree can fail a page test that has nothing to do with it.
 //
 // A generous ceiling hides nothing: a module that fails to evaluate rejects
-// immediately, and only a genuine hang reaches this number.
-const EVALUATION_BUDGET_MS = 20_000
+// immediately, and only a genuine hang reaches this number. Keep this aligned
+// with the full-suite timeout: the two largest page graphs can exceed 20s when
+// the runner is compiling the rest of the application at the same time.
+const EVALUATION_BUDGET_MS = 60_000
 
 describe('page modules', () => {
   it('finds the page tree', () => {

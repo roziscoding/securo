@@ -197,6 +197,11 @@ COMPOSE_PROFILES=agents
 
 Then `docker compose up -d`. Settings → AI Agents to add a provider connection. Off by default; zero cost when off.
 
+To use an eligible ChatGPT plan without an API key, follow the
+[Sign in with ChatGPT user and operations guide](docs/SIGN_IN_WITH_CHATGPT.md).
+It covers the required local helper, remote installations, TLS/proxy settings,
+credential recovery, upgrades, and the opt-in live smoke checklist.
+
 ### Without Docker
 
 `COMPOSE_PROFILES=agents` only tells Docker Compose to start the extra `mcp-server` container, so on a bare-metal or LXC install set `AGENTS_ENABLED=true` alone. The built-in MCP server is a plain uvicorn app in the same virtualenv; run it next to the API and point the backend at it:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime, timedelta, timezone
 
 from billiard.exceptions import SoftTimeLimitExceeded
@@ -14,6 +15,7 @@ from app.agents.models.oauth_credential import OpenAIOAuthCredential
 from app.agents.services.oauth_credentials import RESOURCE_CLEANUP_PENDING
 from app.agents.services.oauth_refresh import refresh_credential
 from app.agents.services.openai_oauth import OAuthLifecycleError, _discard_exception_secrets
+from app.agents.siwc_observability import emit_siwc_event
 from app.core.config import get_settings
 from app.worker import celery_app
 
@@ -141,6 +143,7 @@ async def _record_attempt(
 
 
 async def _do_refresh_due(session_maker, *, now: datetime | None = None) -> dict[str, int]:
+    started = time.monotonic_ns()
     current_time = now or datetime.now(timezone.utc)
     async with session_maker() as session:
         candidates = await _claim_due_credentials(session, current_time)
@@ -199,6 +202,26 @@ async def _do_refresh_due(session_maker, *, now: datetime | None = None) -> dict
                     failed=True,
                     current_time=current_time,
                 )
+    failures = sum(
+        stats[key]
+        for key in ("transient_failures", "definitive_failures", "unexpected_failures")
+    )
+    failure_code = None
+    if stats["transient_failures"]:
+        failure_code = "retryable"
+    elif stats["unexpected_failures"]:
+        failure_code = "internal"
+    elif failures:
+        failure_code = "reauth_required"
+    emit_siwc_event(
+        component="credentials",
+        operation="refresh",
+        outcome="success" if failures == 0 else "partial",
+        failure_code=failure_code,
+        duration_ms=(time.monotonic_ns() - started) // 1_000_000,
+        selected_count=stats["selected"],
+        processed_count=stats["refreshed"] + failures,
+    )
     return stats
 
 

@@ -32,6 +32,7 @@ from app.agents.providers.openai_chatgpt import (
     _serialize_input,
     _serialize_tools,
 )
+from app.agents.services.openai_oauth import OAuthFailureCode, OAuthLifecycleError
 
 _EXCEPTION_ARGS = BaseException.__dict__["args"]
 _EXCEPTION_CAUSE = BaseException.__dict__["__cause__"]
@@ -58,6 +59,25 @@ async def test_public_stream_close_joins_secret_stream_cleanup() -> None:
         await cast(Any, stream).aclose()
 
     assert cleaned is True
+
+
+async def test_retryable_oauth_race_is_classified_as_unavailable_not_auth() -> None:
+    async def racing_stream(*_args, **_kwargs):
+        if False:
+            yield ChatChunk(type="finish")
+        raise OAuthLifecycleError(
+            OAuthFailureCode.RACE_LOST,
+            "A concurrent OAuth lifecycle operation is in progress",
+            retryable=True,
+        )
+
+    provider = OpenAIChatGPTProvider(access_token=cast(Any, object()))
+    with patch.object(provider, "_chat_stream_secret", new=racing_stream):
+        with pytest.raises(LLMUnavailableError):
+            _ = [
+                chunk
+                async for chunk in provider.chat_stream([], model="gpt-test")
+            ]
 
 
 async def test_sse_close_joins_raw_response_iterator_cleanup() -> None:
@@ -253,6 +273,186 @@ def test_responses_transport_uses_only_validated_explicit_egress_settings() -> N
         proxy="https://proxy.example",
         trust_env=False,
     )
+
+
+async def test_responses_transport_trusts_explicit_ca_for_fixed_production_origin(
+    tmp_path,
+) -> None:
+    """Exercise real TLS to api.openai.com through a local CONNECT tunnel."""
+    import datetime
+    import ipaddress
+    import queue
+    import socket
+    import ssl
+    import threading
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Securo test CA")])
+    ca_cert = (
+        x509.CertificateBuilder()
+        .subject_name(ca_name)
+        .issuer_name(ca_name)
+        .public_key(ca_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(minutes=1))
+        .not_valid_after(now + datetime.timedelta(days=1))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()),
+            critical=False,
+        )
+        .add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()),
+            critical=False,
+        )
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=True,
+                crl_sign=True,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .sign(ca_key, hashes.SHA256())
+    )
+    leaf_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    leaf_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "api.openai.com")])
+    leaf_cert = (
+        x509.CertificateBuilder()
+        .subject_name(leaf_name)
+        .issuer_name(ca_name)
+        .public_key(leaf_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(minutes=1))
+        .not_valid_after(now + datetime.timedelta(days=1))
+        .add_extension(
+            x509.SubjectAlternativeName([
+                x509.DNSName("api.openai.com"),
+                x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
+            ]),
+            critical=False,
+        )
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(leaf_key.public_key()),
+            critical=False,
+        )
+        .add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()),
+            critical=False,
+        )
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=True,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=False,
+                crl_sign=False,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .add_extension(
+            x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]),
+            critical=False,
+        )
+        .sign(ca_key, hashes.SHA256())
+    )
+    ca_path = tmp_path / "ca.pem"
+    cert_path = tmp_path / "server.pem"
+    key_path = tmp_path / "server.key"
+    ca_path.write_bytes(ca_cert.public_bytes(serialization.Encoding.PEM))
+    cert_path.write_bytes(leaf_cert.public_bytes(serialization.Encoding.PEM))
+    key_path.write_bytes(leaf_key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ))
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    listener.settimeout(5)
+    port = listener.getsockname()[1]
+    observed: queue.Queue[tuple[bytes, bytes] | BaseException] = queue.Queue(maxsize=1)
+
+    def serve() -> None:
+        try:
+            raw, _address = listener.accept()
+            raw.settimeout(5)
+            connect = b""
+            while b"\r\n\r\n" not in connect:
+                connect += raw.recv(4096)
+            raw.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(cert_path, key_path)
+            with context.wrap_socket(raw, server_side=True) as secure:
+                request = b""
+                while b"\r\n\r\n" not in request:
+                    request += secure.recv(4096)
+                header, body = request.split(b"\r\n\r\n", 1)
+                content_length = 0
+                for line in header.split(b"\r\n")[1:]:
+                    name, _, value = line.partition(b":")
+                    if name.lower() == b"content-length":
+                        content_length = int(value.strip())
+                while len(body) < content_length:
+                    body += secure.recv(4096)
+                request = header + b"\r\n\r\n" + body
+                observed.put((connect, request))
+                secure.sendall(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                    b"Content-Length: 2\r\nConnection: close\r\n\r\n{}"
+                )
+        except BaseException as exc:  # surfaced in the owning test thread
+            observed.put(exc)
+        finally:
+            listener.close()
+
+    thread = threading.Thread(target=serve, daemon=False)
+    thread.start()
+    settings = SimpleNamespace(
+        siwc_oauth_ca_bundle=str(ca_path),
+        siwc_oauth_proxy_url=f"http://127.0.0.1:{port}",
+    )
+    try:
+        with patch(
+            "app.agents.providers.openai_chatgpt.get_agent_settings",
+            return_value=settings,
+        ):
+            async with httpx.AsyncClient(
+                transport=_new_responses_transport(),
+                follow_redirects=False,
+                trust_env=False,
+            ) as client:
+                response = await client.post(
+                    "https://api.openai.com/v1/responses", content=b"{}"
+                )
+        assert response.status_code == 200
+        result = observed.get(timeout=5)
+        if isinstance(result, BaseException):
+            raise result
+        connect, request = result
+        assert connect.startswith(b"CONNECT api.openai.com:443 HTTP/1.1\r\n")
+        assert request.startswith(b"POST /v1/responses HTTP/1.1\r\n")
+    finally:
+        listener.close()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
 
 
 def test_responses_serialization_replays_full_tool_history() -> None:

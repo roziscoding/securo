@@ -1199,7 +1199,8 @@ async def test_provider_cooperative_cancellation_makes_refresh_nonretryable(
             await refresh_credential(
                 session, connection_id, user_id, now=now, force=True
             )
-        assert unknown.value.code is OAuthFailureCode.REFRESH_OUTCOME_UNKNOWN
+        assert unknown.value.code is OAuthFailureCode.RACE_LOST
+        assert unknown.value.retryable is True
 
     assert calls == 1
 
@@ -1493,7 +1494,7 @@ async def test_connection_snapshot_rejects_unknown_attempt_before_provider_call(
     monkeypatch.setattr(openai_oauth, "list_models", forbidden_models)
     result = await connection_service.test_connection(connection, session=session, now=now)
 
-    assert result["auth_state"] == "refresh_outcome_unknown"
+    assert result["auth_state"] == "race_lost"
     assert provider_calls == 0
 
 
@@ -1735,7 +1736,8 @@ async def test_postgres_refresh_lease_prevents_cross_process_refresh_token_reuse
     assert (
         sum(
             isinstance(result, OAuthLifecycleError)
-            and result.code is OAuthFailureCode.REFRESH_OUTCOME_UNKNOWN
+            and result.code is OAuthFailureCode.RACE_LOST
+            and result.retryable
             for result in results
         )
         == 1
@@ -2006,7 +2008,7 @@ async def test_postgres_snapshot_race_blocks_unknown_attempt_before_provider(
         release_snapshot.set()
         result = await task
 
-    assert result["auth_state"] == "refresh_outcome_unknown"
+    assert result["auth_state"] == "race_lost"
     assert provider_calls == 0
 
 

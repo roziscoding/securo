@@ -4,6 +4,18 @@
 **Commit:** `b0ad4cf20350621881a870744468e979752e58a8`
 **Escopo:** permitir que uma conexão de agent use a assinatura ChatGPT do usuário sem API key.
 
+> **Status de implementação (Layer 6):** este documento preserva o estudo e as
+> decisões históricas. O backend, provider Responses, helper local, pairing,
+> lifecycle de refresh/revogação, UI, observabilidade e testes de integração já
+> estão implementados. Use o [guia atual de usuário e operações](SIGN_IN_WITH_CHATGPT.md)
+> para instalar e operar. Os contratos executáveis ficam em
+> `backend/tests/test_agents_oauth_contract.py`,
+> `backend/tests/test_agents_oauth_helper_parity.py`,
+> `backend/tests/test_agents_openai_chatgpt_provider.py` e
+> `backend/tests/integration/`; os testes do helper ficam em
+> `tools/securo-siwc/tests/`. Migrações atuais: 097 (credenciais), 098
+> (scrubbing/leases) e 099 (pairings).
+
 ## Resumo executivo
 
 É tecnicamente possível, mas **não é apenas trocar uma API key por um access token**.

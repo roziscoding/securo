@@ -23,6 +23,7 @@ from app.agents.schemas.oauth_pairing import (
     PairingState,
 )
 from app.agents.services import oauth_pairing, openai_oauth
+from app.agents.siwc_observability import observe_siwc
 from app.core.auth import current_active_user
 from app.core.database import get_async_session
 from app.core.rate_limit import pairing_helper_rate_limit, pairing_start_rate_limit
@@ -250,6 +251,7 @@ def _pairing_secret_boundary(function):
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(pairing_start_rate_limit)],
 )
+@observe_siwc(component="pairing", operation="start")
 async def start_pairing(
     connection_id: uuid.UUID,
     response: Response,
@@ -290,6 +292,7 @@ async def user_pairing_status(
     "/connections/{connection_id}/chatgpt/pairings/{pairing_id}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
+@observe_siwc(component="pairing", operation="cancel")
 async def cancel_pairing(
     connection_id: uuid.UUID,
     pairing_id: uuid.UUID,
@@ -345,6 +348,7 @@ async def helper_status(
     dependencies=[Depends(pairing_helper_rate_limit)],
 )
 @_pairing_secret_boundary
+@observe_siwc(component="pairing", operation="attempt")
 async def helper_attempt(
     pairing_id: uuid.UUID,
     request: Request,
@@ -371,6 +375,7 @@ async def helper_attempt(
     dependencies=[Depends(pairing_helper_rate_limit)],
 )
 @_pairing_secret_boundary
+@observe_siwc(component="pairing", operation="complete")
 async def helper_complete(
     pairing_id: uuid.UUID,
     request: Request,

@@ -124,10 +124,78 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Test CI change selection
-        run: python3 .github/ci/test_changes.py
+        run: |
+          python3 .github/ci/test_changes.py
+          python3 .github/ci/test_scan_siwc_artifacts.py
 
       - name: Check the Alembic revision chain
         run: python3 backend/scripts/check_migration_chain.py
+
+  repository-credential-scan:
+    name: Repository Credential Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Scan source, tests, docs, helper, and CI inputs
+        run: |
+          python3 .github/ci/scan_siwc_artifacts.py \
+            backend/app backend/tests frontend/src docs \
+            tools/securo-siwc/src tools/securo-siwc/tests \
+            tools/securo-siwc/README.md README.md \
+            .github/ci .github/workflows/ci.yml
+
+  siwc-helper:
+    name: SIWC Helper
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/securo-siwc
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+
+      - name: Detect helper-relevant changes
+        id: helper-changes
+        working-directory: .
+        run: python3 .github/ci/changes.py
+
+      - name: Skip helper checks
+        if: steps.helper-changes.outputs.run_helper == 'false'
+        run: echo "No helper-relevant changes; skipping helper checks."
+
+      - name: Set up Python
+        if: steps.helper-changes.outputs.run_helper != 'false'
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install helper in a clean environment
+        if: steps.helper-changes.outputs.run_helper != 'false'
+        run: python -m pip install ".[dev]"
+
+      - name: Lint, type check, and run 48 tests
+        if: steps.helper-changes.outputs.run_helper != 'false'
+        run: |
+          ruff check .
+          ty check --python "$(command -v python)" src tests
+          pytest -q
+
+      - name: Build and validate distributions
+        if: steps.helper-changes.outputs.run_helper != 'false'
+        run: |
+          python -m build
+          python -m twine check dist/*
+          python ../../.github/ci/scan_siwc_artifacts.py dist
+
+      - name: Install built wheel and smoke CLI
+        if: steps.helper-changes.outputs.run_helper != 'false'
+        run: |
+          python -m venv wheel-smoke
+          wheel-smoke/bin/python -m pip install --disable-pip-version-check dist/*.whl
+          wheel-smoke/bin/securo-siwc --help
 
   frontend-checks:
     name: Frontend Checks

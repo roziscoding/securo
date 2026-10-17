@@ -446,6 +446,11 @@ class AgentExecutor:
         channel: str = "web",
         page_context: Optional[dict[str, Any]] = None,
     ) -> AsyncIterator[ExecutorEvent]:
+        # OAuth credential access deliberately rolls the request session back
+        # around provider I/O. Snapshot scalar agent fields used afterwards so
+        # an expired ORM instance never triggers implicit async I/O.
+        agent_id = agent.id
+        agent_temperature = agent.temperature
         try:
             _validate_request_value(user_message, label="User message")
             if page_context is not None:
@@ -544,7 +549,7 @@ class AgentExecutor:
                 user_id=user_id,
                 workspace_id=workspace_id,
                 conversation_id=conversation_id,
-                agent_id=agent.id,
+                agent_id=agent_id,
             )
         except Exception as exc:
             logger.error(
@@ -552,7 +557,7 @@ class AgentExecutor:
                 _safe_exception_kind(exc),
             )
             handles = []
-        allowed = await agent_service.allowed_tool_pairs(session, agent.id)
+        allowed = await agent_service.allowed_tool_pairs(session, agent_id)
         tool_defs = self.mcp.to_provider_tools(handles, allowed=allowed)
         wire_name_counts: dict[str, int] = {}
         for tool in tool_defs:
@@ -631,7 +636,7 @@ class AgentExecutor:
                     messages,
                     model=model,
                     tools=tool_defs or None,
-                    temperature=agent.temperature,
+                    temperature=agent_temperature,
                 )
                 await asyncio.sleep(0)
                 provider_stream = bounded_async_iterator(
@@ -814,7 +819,7 @@ class AgentExecutor:
                 await usage_service.record_usage(
                     session,
                     user_id=user_id,
-                    agent_id=agent.id,
+                    agent_id=agent_id,
                     conversation_id=conversation_id,
                     message_id=assistant_msg.id,
                     provider=provider.name,
@@ -856,7 +861,7 @@ class AgentExecutor:
                 yield ev
 
             results = await asyncio.gather(*[
-                _safe_call_tool(self.mcp, c, advertised_wire_names=advertised_wire_names, user_id=user_id, workspace_id=workspace_id, conversation_id=conversation_id, agent_id=agent.id)
+                _safe_call_tool(self.mcp, c, advertised_wire_names=advertised_wire_names, user_id=user_id, workspace_id=workspace_id, conversation_id=conversation_id, agent_id=agent_id)
                 for c in assembled_calls
             ])
             for c, res in zip(assembled_calls, results):

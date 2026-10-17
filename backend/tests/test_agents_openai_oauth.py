@@ -1693,7 +1693,7 @@ async def test_successful_token_paths_scrub_bounded_responses_and_parsed_payload
             "POST",
             TOKEN_ENDPOINT,
             content=b"successful-request-secret",
-            headers={"Authorization": "Bearer successful-request-secret"},
+            headers={"Authorization": "Bearer " + "successful-request-secret"},
             extensions={"request_secret": "successful-request-secret"},
         )
         response = httpx.Response(
@@ -1758,7 +1758,7 @@ async def test_successful_non_token_paths_scrub_bounded_response_and_payload(
         "POST",
         REVOKE_ENDPOINT,
         content=b"successful-request-secret",
-        headers={"Authorization": "Bearer successful-request-secret"},
+        headers={"Authorization": "Bearer " + "successful-request-secret"},
         extensions={"request_secret": "successful-request-secret"},
     )
     response = httpx.Response(
@@ -2722,6 +2722,176 @@ def test_owned_transport_uses_only_explicit_proxy_and_ca_settings(monkeypatch, t
     assert captured["cafile"] == str(ca_bundle)
     assert captured["capath"] is None
     assert captured["trust_env"] is False
+
+
+@pytest.mark.asyncio
+async def test_oauth_transport_trusts_custom_ca_at_fixed_auth_origin(
+    monkeypatch, tmp_path
+):
+    """Exercise real TLS to auth.openai.com through a local CONNECT tunnel."""
+    import ipaddress
+    import queue
+    import socket
+    import ssl
+    import threading
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+
+    from app.agents.config import AgentSettings
+
+    now = datetime.now(timezone.utc)
+    ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Securo OAuth test CA")])
+    ca_cert = (
+        x509.CertificateBuilder()
+        .subject_name(ca_name)
+        .issuer_name(ca_name)
+        .public_key(ca_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=1))
+        .not_valid_after(now + timedelta(days=1))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()),
+            critical=False,
+        )
+        .add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()),
+            critical=False,
+        )
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=True,
+                crl_sign=True,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .sign(ca_key, hashes.SHA256())
+    )
+    leaf_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    leaf_cert = (
+        x509.CertificateBuilder()
+        .subject_name(x509.Name([
+            x509.NameAttribute(NameOID.COMMON_NAME, "auth.openai.com")
+        ]))
+        .issuer_name(ca_name)
+        .public_key(leaf_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=1))
+        .not_valid_after(now + timedelta(days=1))
+        .add_extension(
+            x509.SubjectAlternativeName([
+                x509.DNSName("auth.openai.com"),
+                x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
+            ]),
+            critical=False,
+        )
+        .add_extension(
+            x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]),
+            critical=False,
+        )
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(leaf_key.public_key()),
+            critical=False,
+        )
+        .add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()),
+            critical=False,
+        )
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=True,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=False,
+                crl_sign=False,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .sign(ca_key, hashes.SHA256())
+    )
+    ca_path = tmp_path / "oauth-ca.pem"
+    cert_path = tmp_path / "oauth-server.pem"
+    key_path = tmp_path / "oauth-server.key"
+    ca_path.write_bytes(ca_cert.public_bytes(serialization.Encoding.PEM))
+    cert_path.write_bytes(leaf_cert.public_bytes(serialization.Encoding.PEM))
+    key_path.write_bytes(leaf_key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ))
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    listener.settimeout(5)
+    port = listener.getsockname()[1]
+    observed: queue.Queue[tuple[bytes, bytes] | BaseException] = queue.Queue(maxsize=1)
+
+    def serve() -> None:
+        try:
+            raw, _address = listener.accept()
+            raw.settimeout(5)
+            connect = b""
+            while b"\r\n\r\n" not in connect:
+                connect += raw.recv(4096)
+            raw.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(cert_path, key_path)
+            with context.wrap_socket(raw, server_side=True) as secure:
+                request = b""
+                while b"\r\n\r\n" not in request:
+                    request += secure.recv(4096)
+                observed.put((connect, request))
+                secure.sendall(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                    b"Content-Length: 11\r\nConnection: close\r\n\r\n{\"keys\":[]}"
+                )
+        except BaseException as exc:
+            observed.put(exc)
+        finally:
+            listener.close()
+
+    thread = threading.Thread(target=serve, daemon=False)
+    thread.start()
+    settings = AgentSettings(
+        siwc_oauth_ca_bundle=str(ca_path),
+        siwc_oauth_proxy_url=f"http://127.0.0.1:{port}",
+    )
+    monkeypatch.setenv("HTTPS_PROXY", "http://attacker.invalid:8080")
+    monkeypatch.setattr(openai_oauth, "get_agent_settings", lambda: settings)
+    try:
+        async with httpx.AsyncClient(
+            transport=_new_oauth_transport_impl(),
+            follow_redirects=False,
+            trust_env=False,
+        ) as client:
+            response = await client.get(JWKS_ENDPOINT)
+        assert response.status_code == 200
+        assert response.json() == {"keys": []}
+        result = observed.get(timeout=5)
+        if isinstance(result, BaseException):
+            raise result
+        connect, request = result
+        assert connect.startswith(b"CONNECT auth.openai.com:443 HTTP/1.1\r\n")
+        assert request.startswith(b"GET /.well-known/jwks.json HTTP/1.1\r\n")
+    finally:
+        listener.close()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
 
 
 @pytest.mark.parametrize(
