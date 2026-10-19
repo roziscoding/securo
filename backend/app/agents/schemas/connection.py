@@ -69,6 +69,7 @@ class ConnectionRead(BaseModel):
             "expired",
             "refresh_outcome_unknown",
             "revocation_pending",
+            "resource_cleanup_pending",
         ]
     ] = None
     account_email: Optional[str] = None
@@ -109,6 +110,10 @@ class ConnectionRead(BaseModel):
             ),
             needs_reauthorization=(
                 credential_status in {"revoked", "reauth_required"}
+                or (
+                    credential is not None
+                    and credential.last_error_code == "resource_cleanup_pending"
+                )
             ),
             created_at=row.created_at,
             updated_at=row.updated_at,
@@ -139,5 +144,6 @@ class ConnectionTestResult(BaseModel):
             "invalid_client",
             "refresh_outcome_unknown",
             "revocation_pending",
+            "resource_cleanup_pending",
         ]
     ] = None

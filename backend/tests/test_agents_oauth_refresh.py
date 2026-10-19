@@ -16,8 +16,10 @@ from billiard.exceptions import SoftTimeLimitExceeded
 from cryptography.hazmat.primitives.asymmetric import rsa
 from jose import jwt
 from sqlalchemy import func, update
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agents.models.oauth_credential import OpenAIOAuthCredential
+from app.agents.providers.base import LLMAuthError, LLMUnavailableError
 from app.agents.services import connection_service, oauth_refresh, openai_oauth
 from app.agents.services.oauth_credentials import (
     CredentialBundle,
@@ -29,6 +31,7 @@ from app.agents.services.oauth_credentials import (
     rotate_credential,
 )
 from app.agents.services.oauth_refresh import (
+    credential_access,
     disable_plan_usage,
     refresh_credential,
     require_reauthorization,
@@ -166,6 +169,304 @@ async def _credential(
         refresh_token_expires_at=now + refresh_expires_delta,
     )
     return connection, credential, now
+
+
+@pytest.fixture(autouse=True)
+def _independent_resource_cleanup_sessions(session, monkeypatch):
+    """Point finalizers at the test database without sharing the request session."""
+    monkeypatch.setattr(
+        oauth_refresh,
+        "_resource_session_maker",
+        async_sessionmaker(session.bind, class_=AsyncSession, expire_on_commit=False),
+    )
+
+
+@pytest.mark.asyncio
+async def test_credential_access_holds_version_bound_lease_until_request_finishes(
+    session, test_user
+):
+    connection, original, now = await _credential(session, test_user, expires_in=3600)
+    expected_version = original.credential_version
+    connection_id = connection.id
+    user_id = test_user.id
+
+    async with credential_access(
+        session, connection_id, user_id, now=now
+    ) as snapshot:
+        assert snapshot.access_token == "old-access"
+        assert snapshot.credential_version == expected_version
+        current = await get_owned_credential(session, connection_id, user_id)
+        assert current is not None
+        assert current.lifecycle_lease_kind == "resource"
+        assert current.lifecycle_lease_token is not None
+
+    await session.rollback()
+    session.expire_all()
+    current = await get_owned_credential(session, connection_id, user_id)
+    assert current is not None
+    assert current.lifecycle_lease_token is None
+    assert current.lifecycle_lease_kind is None
+
+
+@pytest.mark.asyncio
+async def test_credential_access_finalizes_in_dedicated_task_with_independent_session(
+    session, test_user, monkeypatch
+):
+    connection, _, now = await _credential(session, test_user, expires_in=3600)
+    caller_task = asyncio.current_task()
+    seen: dict[str, object] = {}
+    real_release = oauth_refresh.release_credential_lease
+
+    async def tracked_release(finalizer_session, *args, **kwargs):
+        seen["task"] = asyncio.current_task()
+        seen["session"] = finalizer_session
+        return await real_release(finalizer_session, *args, **kwargs)
+
+    monkeypatch.setattr(oauth_refresh, "release_credential_lease", tracked_release)
+
+    async with credential_access(session, connection.id, test_user.id, now=now):
+        pass
+
+    assert seen["task"] is not caller_task
+    assert seen["session"] is not session
+
+
+@pytest.mark.asyncio
+async def test_resource_cleanup_task_captures_only_immutable_action_metadata(
+    session, test_user, monkeypatch
+):
+    connection, _, now = await _credential(session, test_user, expires_in=3600)
+    entered = asyncio.Event()
+    proceed = asyncio.Event()
+    real_release = oauth_refresh.release_credential_lease
+    seen_session = None
+
+    async def delayed_release(cleanup_session, *args, **kwargs):
+        nonlocal seen_session
+        seen_session = cleanup_session
+        entered.set()
+        await proceed.wait()
+        return await real_release(cleanup_session, *args, **kwargs)
+
+    monkeypatch.setattr(oauth_refresh, "release_credential_lease", delayed_release)
+    access = credential_access(session, connection.id, test_user.id, now=now)
+    snapshot = await access.__aenter__()
+    exit_task = asyncio.create_task(access.__aexit__(None, None, None))
+    await entered.wait()
+
+    assert len(oauth_refresh._resource_cleanup_tasks) == 1
+    cleanup_task = next(iter(oauth_refresh._resource_cleanup_tasks))
+    frame = getattr(cleanup_task.get_coro(), "cr_frame")
+    assert frame is not None
+    action = frame.f_locals["action"]
+    assert set(action.__dict__) == {
+        "connection_id",
+        "user_id",
+        "credential_version",
+        "lease_token",
+        "kind",
+    }
+    assert snapshot.access_token not in repr(action.__dict__)
+    assert seen_session is not session
+
+    proceed.set()
+    await exit_task
+    await asyncio.sleep(0)
+    assert not oauth_refresh._resource_cleanup_tasks
+
+
+@pytest.mark.asyncio
+async def test_credential_access_outer_timeout_does_not_wait_for_slow_finalizer(
+    session, test_user, monkeypatch
+):
+    connection, _, now = await _credential(session, test_user, expires_in=3600)
+    connection_id = connection.id
+    user_id = test_user.id
+    entered = asyncio.Event()
+
+    async def slow_release(*args, **kwargs):
+        entered.set()
+        await asyncio.sleep(0.2)
+
+    monkeypatch.setattr(oauth_refresh, "release_credential_lease", slow_release)
+
+    access = credential_access(session, connection_id, user_id, now=now)
+    await access.__aenter__()
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(access.__aexit__(None, None, None), timeout=0.01)
+    assert entered.is_set()
+
+    await session.rollback()
+    current = await get_owned_credential(session, connection_id, user_id)
+    assert current is not None
+    assert current.status == "active"
+    assert current.token_bundle_encrypted is not None
+    assert current.lifecycle_lease_kind == "resource"
+    assert current.lifecycle_lease_token is not None
+
+
+@pytest.mark.asyncio
+async def test_credential_access_cleanup_failure_preserves_primary_typed_error(
+    session, test_user, monkeypatch
+):
+    connection, _, now = await _credential(session, test_user, expires_in=3600)
+    primary = LLMAuthError("primary auth classification", status=401)
+
+    async def fail_scrub(*args, **kwargs):
+        raise RuntimeError("raw cleanup sentinel")
+
+    monkeypatch.setattr(oauth_refresh, "scrub_credential_bundle", fail_scrub)
+
+    with pytest.raises(LLMAuthError) as exc_info:
+        async with credential_access(session, connection.id, test_user.id, now=now):
+            raise primary
+
+    assert exc_info.value is primary
+    assert "cleanup sentinel" not in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_credential_access_cleanup_failure_preserves_primary_cancellation(
+    session, test_user, monkeypatch
+):
+    connection, _, now = await _credential(session, test_user, expires_in=3600)
+    primary = asyncio.CancelledError("primary cancellation")
+
+    async def fail_release(*args, **kwargs):
+        raise RuntimeError("raw cleanup sentinel")
+
+    monkeypatch.setattr(oauth_refresh, "release_credential_lease", fail_release)
+
+    with pytest.raises(asyncio.CancelledError) as exc_info:
+        async with credential_access(session, connection.id, test_user.id, now=now):
+            raise primary
+
+    assert exc_info.value is primary
+
+
+@pytest.mark.asyncio
+async def test_credential_access_success_cleanup_failure_is_sanitized_and_keeps_lease(
+    session, test_user, monkeypatch
+):
+    connection, _, now = await _credential(session, test_user, expires_in=3600)
+    connection_id = connection.id
+    user_id = test_user.id
+
+    async def fail_release(*args, **kwargs):
+        raise RuntimeError("raw cleanup sentinel")
+
+    monkeypatch.setattr(oauth_refresh, "release_credential_lease", fail_release)
+
+    with pytest.raises(LLMUnavailableError) as exc_info:
+        async with credential_access(session, connection.id, test_user.id, now=now):
+            pass
+
+    assert str(exc_info.value) == "ChatGPT credential cleanup failed"
+    assert "sentinel" not in repr(exc_info.value)
+    await session.rollback()
+    current = await get_owned_credential(session, connection_id, user_id)
+    assert current is not None
+    assert current.status == "active"
+    assert current.token_bundle_encrypted is not None
+    assert current.lifecycle_lease_kind == "resource"
+    assert current.lifecycle_lease_token is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status,provider_code,expected_status,expected_error,bundle_retained",
+    [
+        (403, "subscription_sharing_user_not_eligible", "disabled", "scope_loss", True),
+        (403, "subscription_sharing_scope_not_authorized", "disabled", "scope_loss", True),
+        (403, "chatpass_v2_scope_not_authorized", "active", None, True),
+        (403, "chatpass_v2_invalid_authorization_context", "active", None, True),
+        (403, "regional_policy_restriction", "active", None, True),
+        (401, "subscription_sharing_invalid_user", "reauth_required", "reauth_required", False),
+    ],
+)
+async def test_credential_access_applies_version_bound_terminal_resource_state(
+    session,
+    test_user,
+    status,
+    provider_code,
+    expected_status,
+    expected_error,
+    bundle_retained,
+):
+    connection, original, now = await _credential(session, test_user, expires_in=3600)
+    connection_id = connection.id
+    user_id = test_user.id
+    original_version = original.credential_version
+
+    with pytest.raises(LLMAuthError):
+        async with credential_access(
+            session, connection_id, user_id, now=now
+        ):
+            raise LLMAuthError(
+                "safe provider classification",
+                status=status,
+                provider_code=provider_code,
+            )
+
+    current = await get_owned_credential(session, connection_id, user_id)
+    assert current is not None
+    assert current.status == expected_status
+    assert current.last_error_code == expected_error
+    expected_version = original_version + (expected_status != "active")
+    assert current.credential_version == expected_version
+    assert (current.token_bundle_encrypted is not None) is bundle_retained
+    assert current.lifecycle_lease_token is None
+
+
+@pytest.mark.asyncio
+async def test_terminal_resource_finalizer_never_releases_a_newer_winner_lease(
+    session, test_user, monkeypatch
+):
+    connection, original, now = await _credential(session, test_user, expires_in=3600)
+    connection_id = connection.id
+    user_id = test_user.id
+    original_version = original.credential_version
+    real_scrub = oauth_refresh.scrub_credential_bundle
+
+    async def stale_scrub(*args, **kwargs):
+        await session.execute(
+            update(OpenAIOAuthCredential)
+            .where(OpenAIOAuthCredential.connection_id == connection_id)
+            .values(
+                credential_version=original_version + 1,
+                lifecycle_lease_token="newer-winner",
+                lifecycle_lease_kind="resource",
+                lifecycle_lease_expires_at=now + timedelta(minutes=5),
+            )
+        )
+        await session.commit()
+        return await real_scrub(*args, **kwargs)
+
+    monkeypatch.setattr(oauth_refresh, "scrub_credential_bundle", stale_scrub)
+    with pytest.raises(LLMAuthError):
+        async with credential_access(session, connection_id, user_id, now=now):
+            raise LLMAuthError("safe provider classification", status=401)
+
+    current = await get_owned_credential(session, connection_id, user_id)
+    assert current is not None
+    assert current.status == "active"
+    assert current.credential_version == original_version + 1
+    assert current.lifecycle_lease_token == "newer-winner"
+    assert current.token_bundle_encrypted is not None
+
+
+def test_resource_lease_outlives_maximum_validated_inference_deadline() -> None:
+    from app.agents.config import MAX_OAUTH_TIMEOUT_SECONDS
+
+    assert (
+        oauth_refresh._RESOURCE_CLEANUP_TIMEOUT_SECONDS
+        <= oauth_refresh._RESOURCE_LEASE_SAFETY_MARGIN_SECONDS
+    )
+    assert oauth_refresh._RESOURCE_LEASE.total_seconds() == (
+        MAX_OAUTH_TIMEOUT_SECONDS
+        + oauth_refresh._RESOURCE_CLEANUP_TIMEOUT_SECONDS
+        + oauth_refresh._RESOURCE_LEASE_SAFETY_MARGIN_SECONDS
+    )
 
 
 @pytest.mark.asyncio
@@ -1031,6 +1332,8 @@ async def test_connection_probe_refreshes_once_after_unauthorized(session, test_
 @pytest.mark.asyncio
 async def test_connection_probe_forbidden_does_not_refresh(session, test_user, monkeypatch):
     connection, _, now = await _credential(session, test_user, expires_in=3600)
+    connection_id = connection.id
+    user_id = test_user.id
     forces: list[bool] = []
 
     async def fake_refresh(*args, force=False, **kwargs):
@@ -1049,7 +1352,7 @@ async def test_connection_probe_forbidden_does_not_refresh(session, test_user, m
         )
     assert result["auth_state"] == "scope_loss"
     assert forces == [False]
-    current = await get_owned_credential(session, connection.id, test_user.id)
+    current = await get_owned_credential(session, connection_id, user_id)
     assert current is not None
     assert current.status == "disabled"
     assert current.last_error_code == "scope_loss"
@@ -1061,6 +1364,8 @@ async def test_connection_probe_second_unauthorized_scrubs_and_requires_reauth(
     session, test_user, monkeypatch
 ):
     connection, _, now = await _credential(session, test_user, expires_in=3600)
+    connection_id = connection.id
+    user_id = test_user.id
 
     async def fake_refresh(*args, force=False, **kwargs):
         return "fresh-access" if force else "old-access"
@@ -1076,7 +1381,7 @@ async def test_connection_probe_second_unauthorized_scrubs_and_requires_reauth(
             now=now,
         )
     assert result["auth_state"] == "reauth_required"
-    current = await get_owned_credential(session, connection.id, test_user.id)
+    current = await get_owned_credential(session, connection_id, user_id)
     assert current is not None
     assert current.status == "reauth_required"
     assert current.last_error_code == "reauth_required"
@@ -1088,6 +1393,8 @@ async def test_connection_probe_unauthorized_then_forbidden_scrubs_scope_loss(
     session, test_user, monkeypatch
 ):
     connection, _, now = await _credential(session, test_user, expires_in=3600)
+    connection_id = connection.id
+    user_id = test_user.id
 
     async def fake_refresh(*args, force=False, **kwargs):
         return "fresh-access" if force else "old-access"
@@ -1105,7 +1412,7 @@ async def test_connection_probe_unauthorized_then_forbidden_scrubs_scope_loss(
         )
 
     assert result["auth_state"] == "scope_loss"
-    current = await get_owned_credential(session, connection.id, test_user.id)
+    current = await get_owned_credential(session, connection_id, user_id)
     assert current is not None
     assert current.status == "disabled"
     assert current.last_error_code == "scope_loss"
@@ -1301,6 +1608,33 @@ def test_oauth_connection_provider_resolution_fails_closed():
     with pytest.raises(OAuthLifecycleError) as exc_info:
         connection_service.build_provider_for_connection(connection)
     assert exc_info.value.code is OAuthFailureCode.INACTIVE
+
+
+def test_oauth_connection_builds_dedicated_responses_provider_with_lifecycle():
+    from contextlib import asynccontextmanager
+
+    from app.agents.models.connection import LlmConnection
+    from app.agents.providers.openai_chatgpt import OpenAIChatGPTProvider
+
+    @asynccontextmanager
+    async def access(**_kwargs):
+        yield object()
+
+    connection = LlmConnection(
+        name="ChatGPT",
+        kind="openai_chatgpt",
+        user_id=uuid.uuid4(),
+        default_model="gpt-plan",
+        extra={},
+    )
+    provider = connection_service.build_provider_for_connection(
+        connection, access_token=access
+    )
+    assert isinstance(provider, OpenAIChatGPTProvider)
+    assert provider.default_model == "gpt-plan"
+    assert provider.supports_embeddings is False
+    assert not hasattr(provider, "account_email")
+    assert not hasattr(provider, "refresh_token")
 
 
 def test_connection_test_schema_preserves_typed_oauth_result():
@@ -1635,9 +1969,7 @@ async def test_postgres_snapshot_race_blocks_unknown_attempt_before_provider(
     snapshot_waiting = asyncio.Event()
     release_snapshot = asyncio.Event()
     provider_calls = 0
-    from app.agents.services import oauth_credentials
-
-    original_get_owned = oauth_credentials.get_owned_credential
+    original_get_owned = oauth_refresh.get_owned_credential
 
     async def delayed_get_owned(session, target_connection_id, target_user_id):
         snapshot_waiting.set()
@@ -1653,7 +1985,7 @@ async def test_postgres_snapshot_race_blocks_unknown_attempt_before_provider(
         return []
 
     monkeypatch.setattr(oauth_refresh, "refresh_credential", return_old_access)
-    monkeypatch.setattr(oauth_credentials, "get_owned_credential", delayed_get_owned)
+    monkeypatch.setattr(oauth_refresh, "get_owned_credential", delayed_get_owned)
     monkeypatch.setattr(openai_oauth, "list_models", forbidden_models)
 
     async with postgres_sessions() as probe, postgres_sessions() as contender:

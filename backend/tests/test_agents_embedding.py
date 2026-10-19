@@ -10,6 +10,8 @@ from unittest.mock import patch
 
 import pytest
 
+from app.agents.providers.base import LLMNotSupportedError
+
 
 pytestmark = pytest.mark.asyncio
 
@@ -77,6 +79,18 @@ async def test_remote_dispatch_when_provider_is_not_native():
     assert len(vecs[0]) == 1536  # padded
     assert label.startswith("ollama:")
     fake_provider.embed.assert_awaited_once()
+
+
+async def test_chatgpt_subscription_credentials_are_never_selected_for_embeddings():
+    from app.agents.services import embedding
+
+    with (
+        patch.object(embedding.get_agent_settings(), "embedding_provider", "openai_chatgpt"),
+        patch.object(embedding, "build_provider") as build,
+    ):
+        with pytest.raises(LLMNotSupportedError, match="no embedding endpoint"):
+            await embedding.embed_texts(["must stay local"])
+    build.assert_not_called()
 
 
 async def test_empty_input_short_circuits():

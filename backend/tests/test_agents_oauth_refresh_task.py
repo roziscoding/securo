@@ -14,7 +14,11 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.agents.models.oauth_credential import OpenAIOAuthCredential
 from app.agents.services import connection_service
-from app.agents.services.oauth_credentials import CredentialBundle, create_credential
+from app.agents.services.oauth_credentials import (
+    RESOURCE_CLEANUP_PENDING,
+    CredentialBundle,
+    create_credential,
+)
 from app.agents.services.openai_oauth import OAuthFailureCode, OAuthLifecycleError
 from app.models.user import User
 from app.worker import celery_app
@@ -86,6 +90,44 @@ async def test_periodic_task_refreshes_only_due_and_allowed_credentials(
         "unexpected_failures": 0,
     }
     assert calls == [(due.id, test_user.id)]
+
+
+@pytest.mark.asyncio
+async def test_periodic_task_never_selects_cleanup_pending_credential(
+    session, test_user, monkeypatch
+):
+    from app.agents.tasks.oauth_refresh import _do_refresh_due
+
+    now = datetime.now(timezone.utc)
+    connection = await _add_credential(
+        session, test_user, expires_at=now, earliest_at=now
+    )
+    credential = await session.scalar(
+        select(OpenAIOAuthCredential).where(
+            OpenAIOAuthCredential.connection_id == connection.id
+        )
+    )
+    assert credential is not None
+    credential.last_error_code = RESOURCE_CLEANUP_PENDING
+    credential.lifecycle_lease_token = str(uuid.uuid4())
+    credential.lifecycle_lease_kind = "resource"
+    credential.lifecycle_lease_expires_at = now - timedelta(seconds=1)
+    await session.commit()
+    calls = 0
+
+    async def should_not_refresh(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+
+    monkeypatch.setattr(
+        "app.agents.tasks.oauth_refresh.refresh_credential", should_not_refresh
+    )
+    result = await _do_refresh_due(
+        async_sessionmaker(session.bind, expire_on_commit=False), now=now
+    )
+
+    assert result["selected"] == 0
+    assert calls == 0
 
 
 @pytest.mark.asyncio

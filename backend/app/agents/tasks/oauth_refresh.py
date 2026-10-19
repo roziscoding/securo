@@ -11,6 +11,7 @@ from sqlalchemy.pool import NullPool
 
 from app.agents.models.connection import LlmConnection
 from app.agents.models.oauth_credential import OpenAIOAuthCredential
+from app.agents.services.oauth_credentials import RESOURCE_CLEANUP_PENDING
 from app.agents.services.oauth_refresh import refresh_credential
 from app.agents.services.openai_oauth import OAuthLifecycleError, _discard_exception_secrets
 from app.core.config import get_settings
@@ -35,6 +36,10 @@ def _due_credentials_statement(current_time: datetime, *, limit: int = _MAX_CAND
         .where(
             OpenAIOAuthCredential.status == "active",
             OpenAIOAuthCredential.token_bundle_encrypted.is_not(None),
+            or_(
+                OpenAIOAuthCredential.last_error_code.is_(None),
+                OpenAIOAuthCredential.last_error_code != RESOURCE_CLEANUP_PENDING,
+            ),
             OpenAIOAuthCredential.access_token_expires_at <= cutoff,
             or_(
                 OpenAIOAuthCredential.earliest_refresh_at.is_(None),
@@ -118,6 +123,10 @@ async def _record_attempt(
             OpenAIOAuthCredential.connection_id.in_(owned_connection),
             OpenAIOAuthCredential.credential_version == expected_version,
             OpenAIOAuthCredential.status == "active",
+            or_(
+                OpenAIOAuthCredential.last_error_code.is_(None),
+                OpenAIOAuthCredential.last_error_code != RESOURCE_CLEANUP_PENDING,
+            ),
             OpenAIOAuthCredential.access_token_expires_at == observed_access_expiry,
             or_(
                 OpenAIOAuthCredential.lifecycle_lease_token.is_(None),

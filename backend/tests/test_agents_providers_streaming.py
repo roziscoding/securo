@@ -5,26 +5,160 @@ fake whose stream() yields a pre-baked SSE/JSONL response.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from contextlib import asynccontextmanager
-from typing import Iterable
+from typing import Any, Iterable, cast
 
 import pytest
 
 import app.agents.providers.anthropic as anthropic_module
+import app.agents.providers.base as base_module
 import app.agents.providers.ollama as ollama_module
 from app.agents.providers.anthropic import AnthropicProvider
 from app.agents.providers.base import (
+    ChatChunk,
     ChatMessage,
     LLMAuthError,
     LLMNotSupportedError,
+    LLMProvider,
     LLMRateLimitError,
     LLMUnavailableError,
     ToolDefinition,
+    Usage,
 )
 from app.agents.providers.ollama import OllamaProvider
 from app.agents.providers.openai import OpenAIProvider
 from app.agents.providers.openai_compatible import OpenAICompatibleProvider
+
+
+async def test_base_chat_joins_stream_cleanup_on_validation_failure():
+    cleaned = False
+
+    class Provider(LLMProvider):
+        def chat_stream(self, messages, *, model, tools=None, temperature=0.4, max_tokens=None):
+            async def source():
+                nonlocal cleaned
+                try:
+                    yield cast(Any, object())
+                    await asyncio.Event().wait()
+                finally:
+                    cleaned = True
+
+            return source()
+
+        async def embed(self, texts, *, model):
+            return []
+
+    with pytest.raises(LLMUnavailableError):
+        await Provider().chat([], model="test")
+
+    assert cleaned is True
+
+
+async def test_base_chat_has_a_whole_operation_deadline(monkeypatch):
+    cleaned = False
+
+    class Provider(LLMProvider):
+        def chat_stream(self, messages, *, model, tools=None, temperature=0.4, max_tokens=None):
+            async def source():
+                nonlocal cleaned
+                try:
+                    await asyncio.Event().wait()
+                    yield  # pragma: no cover
+                finally:
+                    cleaned = True
+
+            return source()
+
+        async def embed(self, texts, *, model):
+            return []
+
+    monkeypatch.setattr(base_module, "LLM_OPERATION_TIMEOUT_SECONDS", 0.01)
+    with pytest.raises(LLMUnavailableError, match="timed out"):
+        await Provider().chat([], model="test")
+
+    assert cleaned is True
+
+
+async def test_base_chat_cleanup_failure_does_not_replace_primary_error():
+    class Source:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise LLMAuthError("primary auth failure")
+
+        async def aclose(self):
+            raise RuntimeError("cleanup sentinel")
+
+    class Provider(LLMProvider):
+        def chat_stream(self, messages, *, model, tools=None, temperature=0.4, max_tokens=None):
+            return Source()
+
+        async def embed(self, texts, *, model):
+            return []
+
+    with pytest.raises(LLMAuthError, match="primary auth failure"):
+        await Provider().chat([], model="test")
+
+
+async def test_base_chat_cleanup_failure_after_success_is_sanitized():
+    class Source:
+        def __init__(self):
+            self.chunks = iter([ChatChunk(type="finish", finish_reason="stop")])
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self.chunks)
+            except StopIteration:
+                raise StopAsyncIteration from None
+
+        async def aclose(self):
+            raise RuntimeError("cleanup sentinel")
+
+    class Provider(LLMProvider):
+        def chat_stream(self, messages, *, model, tools=None, temperature=0.4, max_tokens=None):
+            return Source()
+
+        async def embed(self, texts, *, model):
+            return []
+
+    with pytest.raises(LLMUnavailableError, match="cleanup failed") as exc_info:
+        await Provider().chat([], model="test")
+
+    assert "sentinel" not in str(exc_info.value)
+
+
+async def test_base_chat_synthetic_cleanup_cancellation_is_availability_error():
+    class Source:
+        def __init__(self):
+            self.sent = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self.sent:
+                raise StopAsyncIteration
+            self.sent = True
+            return ChatChunk(type="finish", finish_reason="stop")
+
+        async def aclose(self):
+            raise asyncio.CancelledError
+
+    class Provider(LLMProvider):
+        def chat_stream(self, messages, *, model, tools=None, temperature=0.4, max_tokens=None):
+            return Source()
+
+        async def embed(self, texts, *, model):
+            return []
+
+    with pytest.raises(LLMUnavailableError, match="cleanup failed"):
+        await Provider().chat([], model="test")
 
 
 # --------------------------------------------------------------------- httpx fake
@@ -89,6 +223,532 @@ def _fake_httpx(monkeypatch):
     monkeypatch.setattr(ollama_module.httpx, "AsyncClient", _FakeAsyncClient)
     monkeypatch.setattr(anthropic_module.httpx, "AsyncClient", _FakeAsyncClient)
     yield
+
+
+# --------------------------------------------------------------------- base collector
+
+
+class _HostileValue:
+    @property
+    def input_tokens(self):
+        raise RuntimeError("model-derived-client-secret-sentinel")
+
+    @property
+    def output_tokens(self):
+        raise RuntimeError("model-derived-client-secret-sentinel")
+
+    def __str__(self):
+        raise RuntimeError("model-derived-client-secret-sentinel")
+
+    def __repr__(self):
+        raise RuntimeError("model-derived-client-secret-sentinel")
+
+    def __hash__(self):
+        raise RuntimeError("model-derived-client-secret-sentinel")
+
+    def __eq__(self, _other):
+        raise RuntimeError("model-derived-client-secret-sentinel")
+
+
+class _HostileChunk(ChatChunk):
+    def __getattribute__(self, _name):
+        raise RuntimeError("model-derived-client-secret-sentinel")
+
+
+def _uninitialized_chunk() -> ChatChunk:
+    return object.__new__(ChatChunk)
+
+
+def _chunk_with_deleted_field() -> ChatChunk:
+    chunk = ChatChunk(type="text_delta", text="must-not-escape")
+    del chunk.type
+    return chunk
+
+
+def _chunk_with_uninitialized_usage() -> ChatChunk:
+    return ChatChunk(type="usage", usage=object.__new__(Usage))
+
+
+def _chunk_with_deleted_usage_field() -> ChatChunk:
+    usage = Usage(input_tokens=1, output_tokens=2)
+    del usage.output_tokens
+    return ChatChunk(type="usage", usage=usage)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "chunk",
+    [
+        _HostileValue(),
+        _uninitialized_chunk(),
+        _chunk_with_deleted_field(),
+        _chunk_with_uninitialized_usage(),
+        _chunk_with_deleted_usage_field(),
+        ChatChunk(type=cast(Any, _HostileValue())),
+        ChatChunk(type=cast(Any, "unknown")),
+        ChatChunk(type="text_delta", text=cast(Any, _HostileValue())),
+        ChatChunk(type="text_delta", text="ok", tool_name="unexpected"),
+        ChatChunk(type="tool_call_start", tool_call_id=cast(Any, _HostileValue()), tool_name="lookup"),
+        ChatChunk(type="tool_call_start", tool_call_id="call", tool_name=cast(Any, _HostileValue())),
+        ChatChunk(type="tool_call_start", tool_call_id="call", tool_name=""),
+        ChatChunk(type="tool_call_start", tool_call_id="call", tool_name="lookup", args_delta="unexpected"),
+        ChatChunk(type="tool_call_args_delta", tool_call_id=cast(Any, _HostileValue()), args_delta=""),
+        ChatChunk(type="tool_call_args_delta", tool_call_id="call", args_delta=cast(Any, _HostileValue())),
+        ChatChunk(type="tool_call_args_delta", tool_call_id="call", args_delta="", tool_name="unexpected"),
+        ChatChunk(type="tool_call_end", tool_call_id=cast(Any, _HostileValue())),
+        ChatChunk(type="tool_call_end", tool_call_id="call", thought_signature=cast(Any, _HostileValue())),
+        ChatChunk(type="tool_call_end", tool_call_id="call", text="unexpected"),
+        ChatChunk(type="usage", usage=cast(Any, _HostileValue())),
+        ChatChunk(type="usage", usage=cast(Any, {"input_tokens": 1, "output_tokens": 2})),
+        ChatChunk(type="usage", usage=Usage(input_tokens=cast(Any, True), output_tokens=0)),
+        ChatChunk(type="usage", usage=Usage(input_tokens=-1, output_tokens=0)),
+        ChatChunk(type="usage", usage=Usage(input_tokens=0, output_tokens=cast(Any, _HostileValue()))),
+        ChatChunk(type="usage", usage=Usage(), text="unexpected"),
+        ChatChunk(type="finish", finish_reason=cast(Any, _HostileValue())),
+        ChatChunk(type="finish", finish_reason=cast(Any, [])),
+        ChatChunk(type="finish", finish_reason=None),
+        ChatChunk(type="finish", finish_reason="stop", usage=Usage()),
+    ],
+    ids=[
+        "not-chunk", "uninitialized-chunk", "deleted-chunk-field",
+        "uninitialized-usage", "deleted-usage-field", "hostile-type", "unknown-type",
+        "hostile-text", "text-extra-field", "hostile-start-id", "hostile-start-name",
+        "empty-start-name", "start-extra-field", "hostile-args-id", "hostile-args",
+        "args-extra-field", "hostile-end-id", "hostile-signature", "end-extra-field",
+        "hostile-usage", "usage-dict", "usage-bool", "usage-negative",
+        "hostile-output-tokens", "usage-extra-field", "hostile-finish", "finish-list",
+        "finish-none", "finish-extra-field",
+    ],
+)
+async def test_base_chat_rejects_every_malformed_chunk_shape_without_inspecting_values(chunk):
+    class Provider(LLMProvider):
+        async def chat_stream(self, messages, *, model, tools=None, temperature=0.4, max_tokens=None):
+            yield chunk
+
+        async def embed(self, texts, *, model):
+            return []
+
+    with pytest.raises(LLMUnavailableError) as exc_info:
+        await Provider().chat([ChatMessage(role="user", content="call")], model="test")
+
+    assert str(exc_info.value) in {
+        "LLM returned an invalid chunk",
+        "LLM returned an unknown chunk type",
+        "LLM returned an invalid text delta",
+        "LLM returned invalid tool metadata",
+        "LLM returned invalid tool arguments",
+        "LLM returned invalid usage",
+        "LLM returned an invalid finish reason",
+    }
+    assert "sentinel" not in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_base_chat_rejects_chunk_subclass_before_attribute_access():
+    hostile_chunk = object.__new__(_HostileChunk)
+
+    class Provider(LLMProvider):
+        async def chat_stream(self, messages, *, model, tools=None, temperature=0.4, max_tokens=None):
+            yield hostile_chunk
+
+        async def embed(self, texts, *, model):
+            return []
+
+    with pytest.raises(LLMUnavailableError, match="invalid chunk"):
+        await Provider().chat([ChatMessage(role="user", content="call")], model="test")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("after_end", [False, True], ids=["orphan", "after-end"])
+async def test_base_chat_validates_empty_argument_delta_state_before_suppression(after_end):
+    class Provider(LLMProvider):
+        async def chat_stream(self, messages, *, model, tools=None, temperature=0.4, max_tokens=None):
+            if after_end:
+                yield ChatChunk(type="tool_call_start", tool_call_id="call", tool_name="lookup")
+                yield ChatChunk(type="tool_call_end", tool_call_id="call")
+            yield ChatChunk(type="tool_call_args_delta", tool_call_id="call", args_delta="")
+
+        async def embed(self, texts, *, model):
+            return []
+
+    with pytest.raises(LLMUnavailableError, match="before the tool call|continued"):
+        await Provider().chat([ChatMessage(role="user", content="call")], model="test")
+
+
+@pytest.mark.asyncio
+async def test_base_chat_rejects_duplicate_usage_before_completion():
+    class Provider(LLMProvider):
+        async def chat_stream(self, messages, *, model, tools=None, temperature=0.4, max_tokens=None):
+            yield ChatChunk(type="usage", usage=Usage(input_tokens=1, output_tokens=2))
+            yield ChatChunk(type="usage", usage=Usage(input_tokens=3, output_tokens=4))
+            yield ChatChunk(type="finish", finish_reason="stop")
+
+        async def embed(self, texts, *, model):
+            return []
+
+    with pytest.raises(LLMUnavailableError, match="duplicate usage"):
+        await Provider().chat([ChatMessage(role="user", content="call")], model="test")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["open-tool", "payload-after-usage"])
+async def test_base_chat_enforces_usage_terminal_order(mode):
+    class Provider(LLMProvider):
+        async def chat_stream(self, messages, *, model, tools=None, temperature=0.4, max_tokens=None):
+            if mode == "open-tool":
+                yield ChatChunk(type="tool_call_start", tool_call_id="call", tool_name="lookup")
+            yield ChatChunk(type="usage", usage=Usage(input_tokens=1, output_tokens=2))
+            if mode == "payload-after-usage":
+                yield ChatChunk(type="text_delta", text="late")
+            yield ChatChunk(type="finish", finish_reason="stop")
+
+        async def embed(self, texts, *, model):
+            return []
+
+    with pytest.raises(LLMUnavailableError, match="usage|incomplete"):
+        await Provider().chat([ChatMessage(role="user", content="call")], model="test")
+
+
+@pytest.mark.asyncio
+async def test_base_chat_rejects_malformed_tool_arguments_without_raw_fallback():
+    secret = "base-collector-secret"
+
+    class Provider(LLMProvider):
+        async def chat_stream(self, messages, *, model, tools=None, temperature=0.4, max_tokens=None):
+            yield ChatChunk(type="tool_call_start", tool_call_id="call", tool_name="lookup")
+            yield ChatChunk(
+                type="tool_call_args_delta",
+                tool_call_id="call",
+                args_delta="{" + secret,
+            )
+            yield ChatChunk(type="tool_call_end", tool_call_id="call")
+            yield ChatChunk(type="finish", finish_reason="tool_calls")
+
+        async def embed(self, texts, *, model):
+            return []
+
+    with pytest.raises(LLMUnavailableError, match="malformed tool arguments") as exc_info:
+        await Provider().chat([ChatMessage(role="user", content="call")], model="test")
+    assert secret not in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("chunks", "error"),
+    [
+        (
+            [
+                ChatChunk(type="text_delta", text="éé"),
+                ChatChunk(type="text_delta", text="a"),
+            ],
+            "text exceeded",
+        ),
+        (
+            [
+                ChatChunk(type="tool_call_start", tool_call_id="a", tool_name="lookup"),
+                ChatChunk(type="tool_call_args_delta", tool_call_id="a", args_delta="é"),
+                ChatChunk(type="tool_call_start", tool_call_id="b", tool_name="lookup"),
+                ChatChunk(type="tool_call_args_delta", tool_call_id="b", args_delta="abc"),
+            ],
+            "tool arguments exceeded",
+        ),
+        (
+            [
+                ChatChunk(type="tool_call_start", tool_call_id="a", tool_name="lookup"),
+                ChatChunk(
+                    type="tool_call_args_delta",
+                    tool_call_id="a",
+                    args_delta=[],  # ty: ignore[invalid-argument-type]
+                ),
+            ],
+            "invalid tool arguments",
+        ),
+    ],
+)
+async def test_base_chat_rejects_aggregate_utf8_before_retaining_fragment(
+    monkeypatch, chunks, error
+):
+    monkeypatch.setattr(base_module, "MAX_STREAM_TEXT_BYTES", 4)
+    monkeypatch.setattr(base_module, "MAX_STREAM_TOOL_ARGUMENT_BYTES", 4)
+    monkeypatch.setattr(base_module, "MAX_STREAM_ALL_TOOL_ARGUMENT_BYTES", 4)
+
+    class Provider(LLMProvider):
+        async def chat_stream(self, messages, *, model, tools=None, temperature=0.4, max_tokens=None):
+            for chunk in chunks:
+                yield chunk
+
+        async def embed(self, texts, *, model):
+            return []
+
+    with pytest.raises(LLMUnavailableError, match=error):
+        await Provider().chat([ChatMessage(role="user", content="call")], model="test")
+
+
+@pytest.mark.asyncio
+async def test_base_chat_accepts_exact_multibyte_boundaries(monkeypatch):
+    monkeypatch.setattr(base_module, "MAX_STREAM_TEXT_BYTES", 4)
+    monkeypatch.setattr(base_module, "MAX_STREAM_TOOL_ARGUMENT_BYTES", 4)
+    monkeypatch.setattr(base_module, "MAX_STREAM_ALL_TOOL_ARGUMENT_BYTES", 4)
+
+    class Provider(LLMProvider):
+        async def chat_stream(self, messages, *, model, tools=None, temperature=0.4, max_tokens=None):
+            yield ChatChunk(type="text_delta", text="é")
+            yield ChatChunk(type="text_delta", text="é")
+            yield ChatChunk(type="tool_call_start", tool_call_id="a", tool_name="lookup")
+            yield ChatChunk(type="tool_call_args_delta", tool_call_id="a", args_delta="{}")
+            yield ChatChunk(type="tool_call_end", tool_call_id="a")
+            yield ChatChunk(type="tool_call_start", tool_call_id="b", tool_name="lookup")
+            yield ChatChunk(type="tool_call_args_delta", tool_call_id="b", args_delta="{}")
+            yield ChatChunk(type="tool_call_end", tool_call_id="b")
+            yield ChatChunk(type="finish", finish_reason="tool_calls")
+
+        async def embed(self, texts, *, model):
+            return []
+
+    response = await Provider().chat(
+        [ChatMessage(role="user", content="call")], model="test"
+    )
+    assert response.content == "éé"
+    assert [call.arguments for call in response.tool_calls] == [{}, {}]
+
+
+@pytest.mark.asyncio
+async def test_base_chat_rejects_tool_call_count_before_retaining_call(monkeypatch):
+    monkeypatch.setattr(base_module, "MAX_STREAM_TOOL_CALLS", 1)
+
+    class Provider(LLMProvider):
+        async def chat_stream(self, messages, *, model, tools=None, temperature=0.4, max_tokens=None):
+            yield ChatChunk(type="tool_call_start", tool_call_id="a", tool_name="lookup")
+            yield ChatChunk(type="tool_call_start", tool_call_id="b", tool_name="lookup")
+
+        async def embed(self, texts, *, model):
+            return []
+
+    with pytest.raises(LLMUnavailableError, match="too many tool calls"):
+        await Provider().chat([ChatMessage(role="user", content="call")], model="test")
+
+
+@pytest.mark.asyncio
+async def test_base_chat_does_not_retain_empty_fragments():
+    import sys
+
+    class EmptyFragment(str):
+        pass
+
+    empty_text = EmptyFragment("")
+    empty_args = EmptyFragment("")
+    text_refs = sys.getrefcount(empty_text)
+    args_refs = sys.getrefcount(empty_args)
+
+    class Provider(LLMProvider):
+        async def chat_stream(self, messages, *, model, tools=None, temperature=0.4, max_tokens=None):
+            yield ChatChunk(type="tool_call_start", tool_call_id="a", tool_name="lookup")
+            for _ in range(10_000):
+                yield ChatChunk(type="text_delta", text=empty_text)
+                yield ChatChunk(type="tool_call_args_delta", tool_call_id="a", args_delta=empty_args)
+            assert sys.getrefcount(empty_text) <= text_refs + 2
+            assert sys.getrefcount(empty_args) <= args_refs + 2
+            yield ChatChunk(type="tool_call_args_delta", tool_call_id="a", args_delta="{}")
+            yield ChatChunk(type="tool_call_end", tool_call_id="a")
+            yield ChatChunk(type="finish", finish_reason="tool_calls")
+
+        async def embed(self, texts, *, model):
+            return []
+
+    response = await Provider().chat(
+        [ChatMessage(role="user", content="call")], model="test"
+    )
+
+    assert response.content == ""
+    assert [call.arguments for call in response.tool_calls] == [{}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("empty_chunks", "should_succeed"),
+    [(0, True), (2, True), (3, False)],
+    ids=["under-limit", "at-limit", "over-limit"],
+)
+async def test_base_chat_bounds_every_chunk_before_empty_suppression(
+    monkeypatch, empty_chunks, should_succeed
+):
+    monkeypatch.setattr(base_module, "MAX_STREAM_CHUNKS", 4)
+
+    class Provider(LLMProvider):
+        async def chat_stream(self, messages, *, model, tools=None, temperature=0.4, max_tokens=None):
+            for _ in range(empty_chunks):
+                yield ChatChunk(type="text_delta", text="")
+            yield ChatChunk(type="text_delta", text="ok")
+            yield ChatChunk(type="finish", finish_reason="stop")
+
+        async def embed(self, texts, *, model):
+            return []
+
+    response = Provider().chat([ChatMessage(role="user", content="call")], model="test")
+    if should_succeed:
+        assert (await response).content == "ok"
+    else:
+        with pytest.raises(LLMUnavailableError, match="too many chunks"):
+            await response
+
+
+@pytest.mark.asyncio
+async def test_base_chat_stops_an_unbounded_empty_chunk_generator(monkeypatch):
+    monkeypatch.setattr(base_module, "MAX_STREAM_CHUNKS", 3)
+    yielded = 0
+
+    class Provider(LLMProvider):
+        async def chat_stream(self, messages, *, model, tools=None, temperature=0.4, max_tokens=None):
+            nonlocal yielded
+            while True:
+                yielded += 1
+                yield ChatChunk(type="text_delta", text="")
+
+        async def embed(self, texts, *, model):
+            return []
+
+    with pytest.raises(LLMUnavailableError, match="too many chunks"):
+        await Provider().chat([ChatMessage(role="user", content="call")], model="test")
+    assert yielded == 4
+
+
+@pytest.mark.asyncio
+async def test_base_chat_rejects_unknown_chunk_after_buffering_state():
+    class Provider(LLMProvider):
+        async def chat_stream(self, messages, *, model, tools=None, temperature=0.4, max_tokens=None):
+            yield ChatChunk(type="text_delta", text="buffered-secret")
+            yield ChatChunk(type="tool_call_start", tool_call_id="call", tool_name="lookup")
+            yield ChatChunk(type="tool_call_args_delta", tool_call_id="call", args_delta="{}")
+            yield ChatChunk(type=cast(Any, "bogus"))
+            yield ChatChunk(type="tool_call_end", tool_call_id="call")
+            yield ChatChunk(type="finish", finish_reason="tool_calls")
+
+        async def embed(self, texts, *, model):
+            return []
+
+    with pytest.raises(LLMUnavailableError, match="unknown chunk type") as exc_info:
+        await Provider().chat([ChatMessage(role="user", content="call")], model="test")
+    assert "buffered-secret" not in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_base_chat_counts_unknown_chunks_before_type_inspection(monkeypatch):
+    monkeypatch.setattr(base_module, "MAX_STREAM_CHUNKS", 1)
+
+    class Provider(LLMProvider):
+        async def chat_stream(self, messages, *, model, tools=None, temperature=0.4, max_tokens=None):
+            yield ChatChunk(type="text_delta", text="")
+            yield ChatChunk(type=cast(Any, "bogus"))
+
+        async def embed(self, texts, *, model):
+            return []
+
+    with pytest.raises(LLMUnavailableError, match="too many chunks"):
+        await Provider().chat([ChatMessage(role="user", content="call")], model="test")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        [ChatChunk(type="tool_call_start", tool_call_id="a", tool_name="lookup")],
+        [ChatChunk(type="text_delta", text="partial")],
+        [
+            ChatChunk(type="tool_call_start", tool_call_id="a", tool_name="lookup"),
+            ChatChunk(type="tool_call_args_delta", tool_call_id="a", args_delta="{}"),
+            ChatChunk(type="finish", finish_reason="tool_calls"),
+        ],
+        [
+            ChatChunk(type="tool_call_start", tool_call_id="a", tool_name="lookup"),
+            ChatChunk(type="tool_call_end", tool_call_id="a"),
+            ChatChunk(type="tool_call_args_delta", tool_call_id="a", args_delta="{}"),
+            ChatChunk(type="finish", finish_reason="tool_calls"),
+        ],
+        [
+            ChatChunk(type="finish", finish_reason="stop"),
+            ChatChunk(type="text_delta", text="late"),
+        ],
+    ],
+    ids=["open-tool-eof", "missing-finish", "finish-before-tool-end", "args-after-end", "after-finish"],
+)
+async def test_base_chat_rejects_incomplete_or_post_terminal_streams(chunks):
+    class Provider(LLMProvider):
+        async def chat_stream(self, messages, *, model, tools=None, temperature=0.4, max_tokens=None):
+            for chunk in chunks:
+                yield chunk
+
+        async def embed(self, texts, *, model):
+            return []
+
+    with pytest.raises(LLMUnavailableError, match="incomplete|continued"):
+        await Provider().chat([ChatMessage(role="user", content="call")], model="test")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        [ChatChunk(type="text_delta", text="bad\x00text"), ChatChunk(type="finish")],
+        [
+            ChatChunk(type="tool_call_start", tool_call_id="a", tool_name="lookup"),
+            ChatChunk(
+                type="tool_call_args_delta",
+                tool_call_id="a",
+                args_delta='{"value":"bad\x00argument"}',
+            ),
+        ],
+        [
+            ChatChunk(type="tool_call_start", tool_call_id="abc", tool_name="de"),
+            ChatChunk(type="tool_call_end", tool_call_id="abc"),
+            ChatChunk(type="finish", finish_reason="tool_calls"),
+        ],
+        [
+            ChatChunk(type="tool_call_start", tool_call_id="a", tool_name="b"),
+            ChatChunk(type="tool_call_end", tool_call_id="a", thought_signature="abcde"),
+            ChatChunk(type="finish", finish_reason="tool_calls"),
+        ],
+        [
+            ChatChunk(
+                type="usage",
+                usage=base_module.Usage(input_tokens=2_147_483_648, output_tokens=0),
+            ),
+            ChatChunk(type="finish"),
+        ],
+    ],
+    ids=["nul-text", "nul-argument", "aggregate-metadata", "signature", "usage"],
+)
+async def test_base_chat_rejects_unpersistable_text_metadata_and_usage(monkeypatch, chunks):
+    monkeypatch.setattr(base_module, "MAX_STREAM_TOOL_METADATA_BYTES", 4)
+    monkeypatch.setattr(base_module, "MAX_STREAM_ALL_TOOL_METADATA_BYTES", 4)
+
+    class Provider(LLMProvider):
+        async def chat_stream(self, messages, *, model, tools=None, temperature=0.4, max_tokens=None):
+            for chunk in chunks:
+                yield chunk
+
+        async def embed(self, texts, *, model):
+            return []
+
+    with pytest.raises(LLMUnavailableError, match="invalid|size limit"):
+        await Provider().chat([ChatMessage(role="user", content="call")], model="test")
+
+
+@pytest.mark.asyncio
+async def test_base_chat_rejects_numeric_overflow_arguments():
+    class Provider(LLMProvider):
+        async def chat_stream(self, messages, *, model, tools=None, temperature=0.4, max_tokens=None):
+            yield ChatChunk(type="tool_call_start", tool_call_id="a", tool_name="lookup")
+            yield ChatChunk(
+                type="tool_call_args_delta", tool_call_id="a", args_delta='{"x":1e999}'
+            )
+            yield ChatChunk(type="tool_call_end", tool_call_id="a")
+            yield ChatChunk(type="finish", finish_reason="tool_calls")
+
+        async def embed(self, texts, *, model):
+            return []
+
+    with pytest.raises(LLMUnavailableError, match="invalid tool arguments"):
+        await Provider().chat([ChatMessage(role="user", content="call")], model="test")
 
 
 # --------------------------------------------------------------------- OpenAI-compatible: chat_stream
