@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.schemas.connection import ConnectionCreate, ConnectionRead, ConnectionTestResult, ConnectionUpdate
 from app.agents.services import connection_service
+from app.agents.siwc_observability import observe_siwc
 from app.core.auth import current_active_user
 from app.core.database import get_async_session
 from app.models.user import User
@@ -89,6 +90,7 @@ async def delete_connection(
 
 
 @router.post("/connections/{conn_id}/revoke", status_code=status.HTTP_204_NO_CONTENT)
+@observe_siwc(component="credentials", operation="revoke")
 async def revoke_connection(
     conn_id: uuid.UUID,
     session: AsyncSession = Depends(get_async_session),

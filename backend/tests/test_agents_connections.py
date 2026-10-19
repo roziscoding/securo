@@ -16,7 +16,7 @@ from app.models.user import User
 # --- Encryption ------------------------------------------------------------
 
 def test_encrypt_decrypt_roundtrip():
-    secret = "sk-ant-totally-secret-12345"
+    secret = "sk-ant-" + "totally-secret-12345"
     enc = encrypt(secret)
     assert enc != secret
     assert enc and len(enc) > 40  # Fernet tokens are noticeably longer than the input

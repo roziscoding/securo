@@ -3,25 +3,32 @@ from __future__ import annotations
 
 import uuid
 import asyncio
+import json
+import logging
 import types
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from typing import cast
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.requests import Request
 
+from app.agents.api import oauth_pairing as pairing_api
 from app.agents.api.oauth_pairing import (
     MAX_PAIRING_BODY,
     _secret,
     _status,
     _strict_body,
     helper_bootstrap,
+    helper_attempt,
+    helper_complete,
     helper_status,
     user_pairing_status,
 )
-from app.agents.schemas.oauth_pairing import CompletionRequest, PairingStatus
+from app.agents.schemas.oauth_pairing import CompletionRequest, PairingStart, PairingStatus
 from app.agents.models.oauth_credential import OpenAIOAuthCredential
 from app.agents.models.connection import LlmConnection
 from app.agents.models.oauth_pairing import OpenAIOAuthPairing
@@ -122,6 +129,28 @@ def test_pairing_status_openapi_is_closed_sanitized_and_secret_free():
         "resource_cleanup_pending", "credential_busy", "start_outcome_unknown",
     }
     assert "secret" not in str(schema).lower()
+
+
+def test_pairing_start_contract_includes_only_secret_and_public_helper_command():
+    now = datetime.now(timezone.utc)
+    pairing_id = uuid.uuid4()
+    parsed = PairingStart.model_validate(
+        {
+            "pairing_id": pairing_id,
+            "secret": "s" * 43,
+            "expires_at": now,
+            "helper_command": "curl helper | python3 - pairing",
+        }
+    )
+    assert parsed.helper_command.endswith("pairing")
+    with pytest.raises(ValueError):
+        PairingStart.model_validate({**parsed.model_dump(), "unexpected": "value"})
+
+    schema = app.openapi()["components"]["schemas"]["PairingStart"]
+    assert schema["additionalProperties"] is False
+    assert set(schema["properties"]) == {
+        "pairing_id", "secret", "expires_at", "helper_command"
+    }
 
 
 @pytest.mark.asyncio
@@ -428,7 +457,12 @@ async def test_expiry_uses_database_clock(session, clean_db, test_user):
     started = await oauth_pairing.start_pairing(session, connection.id, test_user.id)
     await session.execute(
         text("update agent_openai_oauth_pairings set expires_at=:past where id=:id"),
-        {"past": datetime.now(timezone.utc) - timedelta(seconds=1), "id": started.id.hex},
+        {
+            "past": (datetime.now(timezone.utc) - timedelta(seconds=1))
+            .replace(tzinfo=None)
+            .isoformat(sep=" "),
+            "id": started.id.hex,
+        },
     )
     await session.commit()
     with pytest.raises(oauth_pairing.PairingUnavailable):
@@ -526,6 +560,115 @@ async def test_helper_status_totally_scrubs_hostile_cancellation(monkeypatch):
         elif isinstance(value, types.FrameType):
             if not value.f_code.co_filename.endswith("test_agents_oauth_pairing.py"):
                 pending.extend(value.f_locals.values())
+
+
+def _assert_secret_absent_from_exception_graph(error: BaseException, secret: str) -> None:
+    pending: list[object] = [error]
+    seen: set[int] = set()
+    while pending:
+        value = pending.pop()
+        if isinstance(value, str):
+            assert secret not in value
+            continue
+        if isinstance(value, bytes):
+            assert secret.encode() not in value
+            continue
+        if value is None or id(value) in seen:
+            continue
+        seen.add(id(value))
+        if isinstance(value, BaseException):
+            pending.extend(BaseException.__dict__["args"].__get__(value, BaseException))
+            pending.extend((
+                BaseException.__dict__["__cause__"].__get__(value, BaseException),
+                BaseException.__dict__["__context__"].__get__(value, BaseException),
+                BaseException.__dict__["__traceback__"].__get__(value, BaseException),
+            ))
+            dictionary = BaseException.__dict__["__dict__"].__get__(value, BaseException)
+            pending.append(dictionary)
+        elif isinstance(value, types.TracebackType):
+            pending.extend((value.tb_next, value.tb_frame))
+        elif isinstance(value, types.FrameType):
+            pending.extend(value.f_locals.items())
+        elif isinstance(value, Mapping):
+            pending.extend(value.keys())
+            pending.extend(value.values())
+        elif isinstance(value, (list, tuple, set, frozenset)):
+            pending.extend(value)
+
+
+async def _capture_helper_failure(endpoint, secret: str, failure_kind: str):
+    request = Request({
+        "type": "http",
+        "method": "POST",
+        "path": "/pairing",
+        "headers": [(b"content-type", b"application/json")],
+    })
+    arguments = [uuid.uuid4(), request, secret, object()]
+    try:
+        await endpoint(*arguments)
+    except BaseException as error:  # noqa: BLE001 - inspect fatal boundary behavior
+        captured = error
+    else:
+        raise AssertionError(f"{failure_kind} did not fail")
+    finally:
+        arguments.clear()
+        secret = ""
+        endpoint = None
+    return captured
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", [helper_attempt, helper_complete])
+@pytest.mark.parametrize(
+    ("failure_kind", "expected_type", "expected_status", "expected_outcome"),
+    [
+        ("http", HTTPException, 400, "failure"),
+        ("error", HTTPException, 500, "failure"),
+        ("cancel", asyncio.CancelledError, None, "cancelled"),
+        ("system_exit", SystemExit, None, "failure"),
+        ("keyboard_interrupt", KeyboardInterrupt, None, "failure"),
+    ],
+)
+async def test_observed_helper_failure_never_retains_pairing_secret(
+    endpoint,
+    failure_kind,
+    expected_type,
+    expected_status,
+    expected_outcome,
+    monkeypatch,
+    caplog,
+):
+    sentinel = "pairing-observability-secret-" + "s" * 43
+
+    async def fail_body(*_args, **_kwargs):
+        if failure_kind == "http":
+            raise pairing_api._InvalidRequest()
+        if failure_kind == "error":
+            raise RuntimeError(sentinel)
+        if failure_kind == "cancel":
+            raise asyncio.CancelledError(sentinel)
+        if failure_kind == "system_exit":
+            raise SystemExit(sentinel)
+        raise KeyboardInterrupt(sentinel)
+
+    monkeypatch.setattr(pairing_api, "_strict_body", fail_body)
+    with caplog.at_level(logging.INFO, logger="app.agents.siwc"):
+        caught = await _capture_helper_failure(endpoint, sentinel, failure_kind)
+
+    assert isinstance(caught, expected_type)
+    assert getattr(caught, "status_code", None) == expected_status
+    _assert_secret_absent_from_exception_graph(caught, sentinel)
+    events = [
+        json.loads(record.message)
+        for record in caplog.records
+        if record.name == "app.agents.siwc"
+    ]
+    assert len(events) == 1
+    assert events[0]["operation"] == (
+        "attempt" if endpoint is helper_attempt else "complete"
+    )
+    assert events[0]["outcome"] == expected_outcome
+    assert sentinel not in json.dumps(events)
 
 
 @pytest.mark.asyncio
@@ -716,10 +859,16 @@ def test_pairable_credential_predicate_blocks_every_unsafe_resource_state():
 
 @pytest.mark.asyncio
 async def test_user_start_endpoint_returns_secret_once_and_no_store(
-    client, auth_headers, session, clean_db, test_user
+    client, auth_headers, session, clean_db, test_user, monkeypatch
 ):
     from app.core.rate_limit import pairing_start_rate_limit
     from app.main import app
+
+    monkeypatch.setattr(
+        pairing_api, "get_settings", lambda: types.SimpleNamespace(
+            frontend_url="https://securo.example/"
+        )
+    )
 
     connection = LlmConnection(
         user_id=test_user.id, name="ChatGPT", kind="openai_chatgpt", extra={}
@@ -736,7 +885,16 @@ async def test_user_start_endpoint_returns_secret_once_and_no_store(
         app.dependency_overrides.pop(pairing_start_rate_limit, None)
     assert response.status_code == 201
     assert response.headers["cache-control"] == "no-store"
-    secret = response.json()["secret"]
+    payload = response.json()
+    assert set(payload) == {"pairing_id", "secret", "expires_at", "helper_command"}
+    assert payload["helper_command"] == (
+        "curl --disable --noproxy '*' --proto '=https' --tlsv1.2 "
+        "--fail --silent --show-error "
+        "https://securo.example/api/agents/chatgpt/securo-siwc.py | "
+        f"python3 - {payload['pairing_id']} --server https://securo.example"
+    )
+    secret = payload["secret"]
+    assert secret not in payload["helper_command"]
     row = await session.scalar(select(OpenAIOAuthPairing))
     assert row is not None and secret not in row.secret_digest
     status_response = await client.get(

@@ -174,11 +174,18 @@ class LoopbackListener:
                 except ValueError:
                     self.send_error(400)
                     return
-                if set(params) - {"state", "code", "client_id", "error", "error_description"}:
+                if set(params) - {
+                    "state", "code", "client_id", "scope", "error", "error_description"
+                }:
                     self.send_error(400)
                     return
                 states = params.get("state", [])
-                if len(states) != 1 or not hmac.compare_digest(states[0], expected_state):
+                scopes = params.get("scope", [])
+                if (
+                    len(states) != 1
+                    or not hmac.compare_digest(states[0], expected_state)
+                    or len(scopes) > 1
+                ):
                     self.send_error(400)
                     return
                 outcome: Outcome

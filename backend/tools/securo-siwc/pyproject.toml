@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "securo-siwc"
+version = "0.1.0"
+description = "Local Sign in with ChatGPT pairing helper for Securo"
+readme = "README.md"
+license = "AGPL-3.0-only"
+authors = [{ name = "Securo contributors" }]
+requires-python = ">=3.11"
+dependencies = ["httpx==0.28.1", "python-jose[cryptography]>=3.3,<4"]
+classifiers = [
+    "Environment :: Console",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Security",
+]
+
+[project.urls]
+Documentation = "https://github.com/securo-finance/securo/blob/main/docs/SIGN_IN_WITH_CHATGPT.md"
+Repository = "https://github.com/securo-finance/securo"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9",
+    "ruff>=0.17,<0.18",
+    "ty==0.0.86",
+    "build>=1.2",
+    "twine>=6,<7",
+]
+
+[project.scripts]
+securo-siwc = "securo_siwc.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["../../app/agents/_siwc_helper"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ty.environment]
+python-version = "3.11"

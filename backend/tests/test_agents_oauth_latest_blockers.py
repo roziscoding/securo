@@ -172,6 +172,45 @@ async def _postgres_resource_credential(postgres_sessions, label: str):
     return connection_id, user_id, now
 
 
+@pytest.mark.asyncio
+async def test_live_refresh_attempt_is_retryable_busy_not_unknown_outcome(postgres_sessions):
+    connection_id, user_id, now = await _postgres_credential(
+        postgres_sessions, "live-refresh-attempt"
+    )
+    attempt_id = str(uuid.uuid4())
+    async with postgres_sessions() as owner:
+        credential = await get_owned_credential(owner, connection_id, user_id)
+        assert credential is not None
+        credential.status = "reauth_required"
+        credential.last_error_code = "refresh_outcome_unknown"
+        credential.refresh_attempt_id = attempt_id
+        credential.refresh_attempt_started_at = now
+        credential.refresh_restore_status = "active"
+        credential.lifecycle_lease_token = attempt_id
+        credential.lifecycle_lease_kind = "refresh"
+        credential.lifecycle_lease_expires_at = now + timedelta(minutes=5)
+        await owner.commit()
+
+    async with postgres_sessions() as contender:
+        with pytest.raises(OAuthLifecycleError) as refresh_error:
+            await oauth_refresh.refresh_credential(
+                contender, connection_id, user_id, now=now, force=True
+            )
+        assert refresh_error.value.code is OAuthFailureCode.RACE_LOST
+        assert refresh_error.value.retryable is True
+        assert refresh_error.value.definitive is False
+
+    async with postgres_sessions() as contender:
+        with pytest.raises(OAuthLifecycleError) as access_error:
+            async with oauth_refresh.credential_access(
+                contender, connection_id, user_id, now=now
+            ):
+                raise AssertionError("live refresh loser cannot receive a token")
+        assert access_error.value.code is OAuthFailureCode.RACE_LOST
+        assert access_error.value.retryable is True
+        assert access_error.value.definitive is False
+
+
 @asynccontextmanager
 async def _connection_for(postgres_sessions, connection_id, user_id):
     async with postgres_sessions() as worker:

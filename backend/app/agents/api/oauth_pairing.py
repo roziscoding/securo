@@ -23,7 +23,15 @@ from app.agents.schemas.oauth_pairing import (
     PairingState,
 )
 from app.agents.services import oauth_pairing, openai_oauth
+from app.agents.siwc_distribution import (
+    bootstrap_script,
+    helper_command,
+    helper_wheel,
+    public_frontend_origin,
+)
+from app.agents.siwc_observability import observe_siwc
 from app.core.auth import current_active_user
+from app.core.config import get_settings
 from app.core.database import get_async_session
 from app.core.rate_limit import pairing_helper_rate_limit, pairing_start_rate_limit
 from app.models.user import User
@@ -244,18 +252,58 @@ def _pairing_secret_boundary(function):
     return guarded
 
 
+def _configured_frontend_origin() -> str:
+    try:
+        return public_frontend_origin(get_settings().frontend_url)
+    except ValueError:
+        raise _ProviderUnavailable() from None
+
+
+@router.get("/chatgpt/securo-siwc.py", include_in_schema=False)
+async def download_siwc_bootstrap() -> Response:
+    origin = _configured_frontend_origin()
+    _, _, digest = helper_wheel()
+    return Response(
+        content=bootstrap_script(origin, digest),
+        media_type="text/x-python",
+        headers={
+            "Cache-Control": "no-store",
+            "Pragma": "no-cache",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get("/chatgpt/securo-siwc.whl", include_in_schema=False)
+async def download_siwc_wheel() -> Response:
+    wheel, filename, digest = helper_wheel()
+    return Response(
+        content=wheel,
+        media_type="application/octet-stream",
+        headers={
+            "Cache-Control": "no-store",
+            "Pragma": "no-cache",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "ETag": f'"sha256:{digest}"',
+        },
+    )
+
+
 @router.post(
     "/connections/{connection_id}/chatgpt/pairings",
     response_model=PairingStart,
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(pairing_start_rate_limit)],
 )
+@observe_siwc(component="pairing", operation="start")
 async def start_pairing(
     connection_id: uuid.UUID,
     response: Response,
     session: AsyncSession = Depends(get_async_session),
     user: User = Depends(current_active_user),
 ):
+    origin = _configured_frontend_origin()
     try:
         started = await oauth_pairing.start_pairing(session, connection_id, user.id)
     except oauth_pairing.PairingUnavailable:
@@ -263,7 +311,10 @@ async def start_pairing(
     response.headers["Cache-Control"] = "no-store"
     response.headers["Pragma"] = "no-cache"
     return PairingStart(
-        pairing_id=started.id, secret=started.secret, expires_at=started.expires_at
+        pairing_id=started.id,
+        secret=started.secret,
+        expires_at=started.expires_at,
+        helper_command=helper_command(origin, started.id),
     )
 
 
@@ -290,6 +341,7 @@ async def user_pairing_status(
     "/connections/{connection_id}/chatgpt/pairings/{pairing_id}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
+@observe_siwc(component="pairing", operation="cancel")
 async def cancel_pairing(
     connection_id: uuid.UUID,
     pairing_id: uuid.UUID,
@@ -345,6 +397,7 @@ async def helper_status(
     dependencies=[Depends(pairing_helper_rate_limit)],
 )
 @_pairing_secret_boundary
+@observe_siwc(component="pairing", operation="attempt")
 async def helper_attempt(
     pairing_id: uuid.UUID,
     request: Request,
@@ -371,6 +424,7 @@ async def helper_attempt(
     dependencies=[Depends(pairing_helper_rate_limit)],
 )
 @_pairing_secret_boundary
+@observe_siwc(component="pairing", operation="complete")
 async def helper_complete(
     pairing_id: uuid.UUID,
     request: Request,

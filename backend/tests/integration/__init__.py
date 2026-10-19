@@ -1,0 +1,1 @@
+"""Assembled PostgreSQL integration coverage."""

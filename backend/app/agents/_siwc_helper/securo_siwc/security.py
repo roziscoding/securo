@@ -127,7 +127,19 @@ def _detach_response(response: httpx.Response) -> tuple[object, ...]:
             detached.append(object.__getattribute__(response, name))
         except BaseException:
             detached.append(None)
-    request, _history, next_request, _extensions = detached
+    request, _history, next_request, response_extensions = detached
+    # httpx exposes its live pooled socket through the private
+    # ``network_stream`` response extension. It is transport state, not
+    # credential material; traversing it erases the socket and corrupts the
+    # owned client before the next request on the keep-alive connection.
+    # Detach it without scheduling it for graph erasure. Other extension
+    # values remain scrubbed because test-only/unknown metadata may retain
+    # request data.
+    if type(response_extensions) is dict:
+        try:
+            dict.pop(response_extensions, "network_stream", None)
+        except BaseException:
+            pass
     for name, replacement in (
         ("_request", None), ("next_request", None), ("history", []),
         ("extensions", {}), ("_content", b""), ("stream", httpx.ByteStream(b"")),

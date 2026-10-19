@@ -3,6 +3,21 @@ import http, { agents, WORKSPACE_STORAGE_KEY } from './api'
 
 const signal = new AbortController().signal
 const encoder = new TextEncoder()
+const pairingId = '235e24a4-df88-4e3d-b6cf-750bc109d4d0'
+const helperCommand = `curl --disable --noproxy '*' --proto '=https' --tlsv1.2 --fail --silent --show-error https://securo.example/api/agents/chatgpt/securo-siwc.py | python3 - ${pairingId} --server https://securo.example`
+
+function startObject(secret = 'secret') {
+  return {
+    pairing_id: pairingId,
+    secret,
+    expires_at: '2030-01-01T00:00:00Z',
+    helper_command: helperCommand,
+  }
+}
+
+function startPayload(secret = 'secret'): string {
+  return JSON.stringify(startObject(secret))
+}
 
 function fetchResponse(
   payload: string,
@@ -36,6 +51,7 @@ function fetchResponse(
 
 beforeEach(() => {
   const values = new Map<string, string>()
+  vi.stubGlobal('location', { origin: 'https://securo.example' })
   vi.stubGlobal('localStorage', {
     getItem: (key: string) => values.get(key) ?? null,
     setItem: (key: string, value: string) => values.set(key, value),
@@ -61,16 +77,15 @@ describe('ChatGPT connection API contracts', () => {
 
   it('uses an isolated bounded fetch boundary and scrubs source bytes after returning the secret', async () => {
     const sentinel = 'one-time-secret-boundary-sentinel'
-    const wire = fetchResponse(JSON.stringify({
-      pairing_id: 'pair-1', secret: sentinel, expires_at: '2030-01-01T00:00:00Z',
-    }))
+    const wire = fetchResponse(startPayload(sentinel))
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(wire.response)
     const axiosPost = vi.spyOn(http, 'post')
 
     const promise = agents.connections.startPairing('connection-1', signal)
     const started = await promise
 
-    expect(started.pairing_id).toBe('pair-1')
+    expect(started.pairing_id).toBe(pairingId)
+    expect(started.helper_command).toBe(helperCommand)
     expect(new TextDecoder().decode(started.secretBytes)).toBe(sentinel)
     expect(wire.source.every((byte) => byte === 0)).toBe(true)
     expect(JSON.stringify(started)).not.toContain(sentinel)
@@ -105,12 +120,10 @@ describe('ChatGPT connection API contracts', () => {
   ])(
     'accepts exact 201 with JSON media type %s',
     async (contentType) => {
-      const wire = fetchResponse(JSON.stringify({
-        pairing_id: 'pair-1', secret: 'secret', expires_at: '2030-01-01T00:00:00Z',
-      }), 201, contentType)
+      const wire = fetchResponse(startPayload(), 201, contentType)
       vi.spyOn(globalThis, 'fetch').mockResolvedValue(wire.response)
 
-      await expect(agents.connections.startPairing('connection-1', signal)).resolves.toMatchObject({ pairing_id: 'pair-1' })
+      await expect(agents.connections.startPairing('connection-1', signal)).resolves.toMatchObject({ pairing_id: pairingId })
     },
   )
 
@@ -168,7 +181,7 @@ describe('ChatGPT connection API contracts', () => {
   })
 
   it('preserves UTF-8 decoding and multi-chunk bounds for an exact success response', async () => {
-    const payload = JSON.stringify({ pairing_id: 'pair-1', secret: 'sëcret', expires_at: '2030-01-01T00:00:00Z' })
+    const payload = startPayload('sëcret')
     const bytes = encoder.encode(payload)
     const parts = [bytes.slice(0, 11), bytes.slice(11, 29), bytes.slice(29)]
     const wire = fetchResponse(payload, 201, 'application/json; charset=utf-8', parts)
@@ -199,9 +212,16 @@ describe('ChatGPT connection API contracts', () => {
   })
 
   it.each([
-    ['wrong type', JSON.stringify({ pairing_id: 4, secret: 'secret', expires_at: '2030-01-01T00:00:00Z' })],
-    ['extra field', JSON.stringify({ pairing_id: 'pair', secret: 'secret', expires_at: '2030-01-01T00:00:00Z', extra: true })],
-    ['oversized secret', JSON.stringify({ pairing_id: 'pair', secret: 'x'.repeat(5000), expires_at: '2030-01-01T00:00:00Z' })],
+    ['wrong type', JSON.stringify({ ...startObject(), pairing_id: 4 })],
+    ['extra field', JSON.stringify({ ...startObject(), extra: true })],
+    ['oversized secret', startPayload('x'.repeat(5000))],
+    ['missing helper command', JSON.stringify({ pairing_id: 'pair', secret: 'secret', expires_at: '2030-01-01T00:00:00Z' })],
+    ['helper command wrong type', JSON.stringify({ ...startObject(), helper_command: 4 })],
+    ['helper command control character', JSON.stringify({ ...startObject(), helper_command: 'curl helper\nrm nope' })],
+    ['helper command shell injection', JSON.stringify({ ...startObject(), helper_command: `${helperCommand}; rm -rf nope` })],
+    ['helper command pairing mismatch', JSON.stringify({ ...startObject(), helper_command: helperCommand.replace(pairingId, '235e24a4-df88-4e3d-b6cf-750bc109d4d1') })],
+    ['helper command origin mismatch', JSON.stringify({ ...startObject(), helper_command: helperCommand.replace('--server https://securo.example', '--server https://other.example') })],
+    ['helper command untrusted origin', JSON.stringify({ ...startObject(), helper_command: helperCommand.replaceAll('securo.example', 'evil.example') })],
   ])('rejects and scrubs malformed start responses: %s', async (_name, payload) => {
     const wire = fetchResponse(payload)
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(wire.response)

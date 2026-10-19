@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { QueryClient } from '@tanstack/react-query'
 import { createTestQueryClient, renderWithProviders } from '@/test/utils'
 import { ChatGptPairingDialog } from './chatgpt-pairing-dialog'
-import { chatGptHelperCommand, normalizeOAuthModels } from './chatgpt-pairing-utils'
+import { normalizeOAuthModels } from './chatgpt-pairing-utils'
 import type { LlmConnection, PairingStart } from '@/lib/api'
 import { AGENT_CONNECTIONS_KEY } from '@/lib/agent-connections-cache'
 
@@ -27,10 +27,12 @@ const connection: LlmConnection = {
 }
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
-const started = (overrides: { pairing_id?: string; secret?: string; expires_at?: string } = {}): PairingStart => ({
+const helperCommand = "curl --disable --noproxy '*' --proto '=https' --tlsv1.2 --fail --silent --show-error https://securo.example/api/agents/chatgpt/securo-siwc.py | python3 - pair-1 --server https://securo.example"
+const started = (overrides: { pairing_id?: string; secret?: string; expires_at?: string; helper_command?: string } = {}): PairingStart => ({
   pairing_id: overrides.pairing_id ?? 'pair-1',
   secretBytes: encoder.encode(overrides.secret ?? 'one-time-secret'),
   expires_at: overrides.expires_at ?? new Date(Date.now() + 60_000).toISOString(),
+  helper_command: overrides.helper_command ?? helperCommand,
 })
 
 type Fiber = Record<string, unknown> & {
@@ -96,10 +98,7 @@ async function settleStart(value = started()) {
 }
 
 describe('secure ChatGPT pairing', () => {
-  it('builds the exact HTTPS-only public command and normalizes both model contracts', () => {
-    expect(chatGptHelperCommand('pair-1', { protocol: 'https:', origin: 'https://securo.example' } as Location))
-      .toBe('securo-siwc pair-1 --server https://securo.example')
-    expect(chatGptHelperCommand('pair-1', { protocol: 'http:', origin: 'http://localhost' } as Location)).toBeNull()
+  it('normalizes both model contracts', () => {
     expect(normalizeOAuthModels(['gpt-a', { slug: 'gpt-b', display_name: 'GPT B' }])).toEqual([
       { slug: 'gpt-a', display_name: 'gpt-a' }, { slug: 'gpt-b', display_name: 'GPT B' },
     ])
@@ -215,7 +214,7 @@ describe('secure ChatGPT pairing', () => {
     await view.user.click(screen.getByRole('button', { name: 'Copy helper command' }))
     await view.user.click(screen.getByRole('button', { name: 'Copy one-time secret' }))
     expect(clipboard.mock.calls).toEqual([
-      ['securo-siwc pair-1 --server https://securo.example'],
+      [helperCommand],
       ['one-time-secret'],
     ])
     clipboard.mockRestore()

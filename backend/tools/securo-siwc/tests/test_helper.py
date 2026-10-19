@@ -160,6 +160,48 @@ def test_wrong_state_does_not_poison_listener():
         listener.close()
 
 
+def test_callback_accepts_openai_granted_scope_parameter():
+    outcomes: queue.Queue[CallbackResult | CallbackFailure] = queue.Queue(maxsize=1)
+    listener = LoopbackListener(outcomes)
+    listener.start()
+    listener.arm("expected", None)
+    try:
+        callback = f"http://127.0.0.1:{listener.port}/auth/callback?" + urlencode(
+            {
+                "code": "authorization-code",
+                "scope": "chatgpt.tokens.use.direct email offline_access openid profile resource.invoke",
+                "state": "expected",
+                "client_id": "oaiapp-securo",
+            }
+        )
+        assert urlopen(callback, timeout=2).status == 200
+        assert outcomes.get(timeout=1) == CallbackResult(
+            "authorization-code", "oaiapp-securo"
+        )
+    finally:
+        listener.close()
+
+
+def test_duplicate_scope_is_rejected_without_consuming_callback():
+    outcomes: queue.Queue[CallbackResult | CallbackFailure] = queue.Queue(maxsize=1)
+    listener = LoopbackListener(outcomes)
+    listener.start()
+    listener.arm("expected", "issued-client")
+    try:
+        base = f"http://127.0.0.1:{listener.port}/auth/callback?"
+        polluted = base + "code=poison&state=expected&scope=openid&scope=profile"
+        with pytest.raises(Exception):
+            urlopen(polluted, timeout=2)
+        assert outcomes.empty()
+        valid = base + urlencode(
+            {"code": "authorization-code", "state": "expected", "scope": "openid"}
+        )
+        assert urlopen(valid, timeout=2).status == 200
+        assert outcomes.get(timeout=1) == CallbackResult("authorization-code", "issued-client")
+    finally:
+        listener.close()
+
+
 def test_concurrent_local_attackers_cannot_poison_listener_arming():
     outcomes: queue.Queue[CallbackResult | CallbackFailure] = queue.Queue(maxsize=1)
     listener = LoopbackListener(outcomes)

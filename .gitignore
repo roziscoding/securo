@@ -11,6 +11,14 @@ docs/plans/
 tmp/
 docker-compose.override.yml
 
+# Python build/test artifacts (including the standalone SIWC helper)
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.egg-info/
+wheel-smoke/
+
 # Ignore local configuration files
 .vscode/
 

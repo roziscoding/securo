@@ -248,6 +248,23 @@ def _race_lost() -> OAuthLifecycleError:
     )
 
 
+def _has_live_refresh_attempt(
+    credential: OpenAIOAuthCredential, *, now: datetime
+) -> bool:
+    """Distinguish an owned in-flight dispatch from an abandoned attempt."""
+    expires_at = credential.lifecycle_lease_expires_at
+    attempt_id = credential.refresh_attempt_id
+    return (
+        credential.status == "reauth_required"
+        and credential.last_error_code == "refresh_outcome_unknown"
+        and attempt_id is not None
+        and credential.lifecycle_lease_token == attempt_id
+        and credential.lifecycle_lease_kind == "refresh"
+        and expires_at is not None
+        and _utc(expires_at) > now
+    )
+
+
 def _previous_revocation_failure(last_error_code: str | None) -> OAuthLifecycleError:
     try:
         code = OAuthFailureCode(last_error_code)
@@ -275,6 +292,7 @@ async def credential_access(
     rejected_version: int | None = None,
 ):
     """Lease the exact active credential version for one resource request."""
+    current_time = _utc(now or _now())
     await refresh_credential(
         session,
         connection_id,
@@ -289,6 +307,9 @@ async def credential_access(
         raise LookupError("connection not found")
     await session.refresh(current)
     if current.last_error_code == RESOURCE_CLEANUP_PENDING:
+        await session.rollback()
+        raise _race_lost()
+    if _has_live_refresh_attempt(current, now=current_time):
         await session.rollback()
         raise _race_lost()
     if current.status != "active":
@@ -405,6 +426,9 @@ async def refresh_credential(
     if current.last_error_code == RESOURCE_CLEANUP_PENDING:
         await session.rollback()
         raise _race_lost()
+    if _has_live_refresh_attempt(current, now=current_time):
+        await session.rollback()
+        raise _race_lost()
     if current.status != "active":
         inactive_status = current.status
         inactive_error = current.last_error_code
@@ -449,6 +473,9 @@ async def refresh_credential(
         current_time = _utc(now or _now())
         credential = await _locked_owned_credential(session, connection_id, user_id)
         if credential.last_error_code == RESOURCE_CLEANUP_PENDING:
+            await session.rollback()
+            raise _race_lost()
+        if _has_live_refresh_attempt(credential, now=current_time):
             await session.rollback()
             raise _race_lost()
         if credential.status != "active":

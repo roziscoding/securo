@@ -5,6 +5,7 @@ import asyncio
 import json
 import math
 import ssl
+import time
 import traceback as traceback_module
 import types
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
@@ -29,6 +30,7 @@ from app.agents.providers.base import (
     bounded_async_iterator,
     owned_async_context,
 )
+from app.agents.siwc_observability import emit_siwc_event
 
 _RESPONSES_URL = "https://api.openai.com/v1/responses"
 _TOOL_NAMESPACE = "securo"
@@ -1285,12 +1287,15 @@ class OpenAIChatGPTProvider(LLMProvider):
         temperature: float = 0.4,
         max_tokens: Optional[int] = None,
     ) -> AsyncIterator[ChatChunk]:
+        observed_started = time.monotonic_ns()
+        observed_outcome = "success"
+        observed_failure: str | None = None
         failure: tuple[type[LLMError], str, int | None, _ErrorMetadata] | None = None
         failure_kind: str | None = None
         secret_stream: AsyncGenerator[ChatChunk, None] | None = None
         cancellation = _OperationCancellation()
-        await cancellation.checkpoint()
         try:
+            await cancellation.checkpoint()
             secret_stream = bounded_async_iterator(
                 self._chat_stream_secret(
                     messages,
@@ -1313,8 +1318,12 @@ class OpenAIChatGPTProvider(LLMProvider):
 
             if cancellation.contains(exc):
                 failure_kind = "cancelled"
+                observed_outcome = "cancelled"
+                observed_failure = "cancelled"
             elif _is_instance_without_hooks(exc, LLMError):
                 failure = _safe_llm_failure(exc)
+                observed_outcome = "failure"
+                observed_failure = "provider_unavailable"
             elif _is_instance_without_hooks(exc, LookupError):
                 failure = (
                     LLMAuthError,
@@ -1322,6 +1331,8 @@ class OpenAIChatGPTProvider(LLMProvider):
                     None,
                     _EMPTY_ERROR_METADATA.copy(),
                 )
+                observed_outcome = "failure"
+                observed_failure = "not_available"
             elif _is_instance_without_hooks(exc, OAuthLifecycleError):
                 retryable = False
                 try:
@@ -1340,6 +1351,8 @@ class OpenAIChatGPTProvider(LLMProvider):
                     None,
                     _EMPTY_ERROR_METADATA.copy(),
                 )
+                observed_outcome = "failure"
+                observed_failure = "retryable" if retryable else "reauth_required"
             elif _is_instance_without_hooks(exc, _SecretBoundaryFailure):
                 failure = (
                     LLMUnavailableError,
@@ -1347,11 +1360,22 @@ class OpenAIChatGPTProvider(LLMProvider):
                     None,
                     _EMPTY_ERROR_METADATA.copy(),
                 )
+                observed_outcome = "failure"
+                observed_failure = "internal"
             else:
+                observed_outcome = "failure"
+                observed_failure = "internal"
                 raise
             _discard_exception_secrets_safely(exc)
         finally:
             secret_stream = None
+            emit_siwc_event(
+                component="responses",
+                operation="inference",
+                outcome=observed_outcome,
+                failure_code=observed_failure,
+                duration_ms=(time.monotonic_ns() - observed_started) // 1_000_000,
+            )
         if failure_kind == "cancelled":
             raise asyncio.CancelledError() from None
         if failure is not None:
