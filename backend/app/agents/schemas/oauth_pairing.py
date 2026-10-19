@@ -39,6 +39,7 @@ class PairingStart(StrictModel):
     pairing_id: uuid.UUID
     secret: str
     expires_at: datetime
+    helper_command: str
 
 
 class PairingStatus(StrictModel):

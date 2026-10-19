@@ -1747,7 +1747,7 @@ export type OAuthCredentialStatus = 'not_connected' | 'active' | 'disabled' | 'r
 export type OAuthErrorCode = 'transient' | 'revoked' | 'scope_loss' | 'corrupt_token' | 'reauth_required' | 'too_early' | 'race_lost' | 'redirect_rejected' | 'malformed_response' | 'inactive' | 'invalid_client' | 'expired' | 'refresh_outcome_unknown' | 'revocation_pending' | 'resource_cleanup_pending'
 export type PairingState = 'pending' | 'attempt_registered' | 'completing' | 'completed' | 'cancelled' | 'failed'
 export type PairingFailureCode = OAuthErrorCode | 'credential_busy' | 'start_outcome_unknown'
-export interface PairingStart { pairing_id: string; secretBytes: Uint8Array; expires_at: string }
+export interface PairingStart { pairing_id: string; secretBytes: Uint8Array; expires_at: string; helper_command: string }
 export interface PairingStatus { pairing_id: string; state: PairingState; expires_at: string; failure_code?: PairingFailureCode | null }
 export interface OAuthModel { slug: string; display_name: string }
 
@@ -1982,6 +1982,30 @@ function pairingStartHeaders(): Record<string, string> {
   return headers
 }
 
+const PAIRING_HELPER_PREFIX = "curl --disable --noproxy '*' --proto '=https' --tlsv1.2 --fail --silent --show-error "
+const PAIRING_HELPER_ROUTE = '/api/agents/chatgpt/securo-siwc.py'
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+function isCanonicalHelperCommand(command: string, pairingId: string): boolean {
+  if (!UUID_PATTERN.test(pairingId) || !command.startsWith(PAIRING_HELPER_PREFIX)) return false
+  const routeAt = command.indexOf(PAIRING_HELPER_ROUTE, PAIRING_HELPER_PREFIX.length)
+  if (routeAt < 0) return false
+  const origin = command.slice(PAIRING_HELPER_PREFIX.length, routeAt)
+  let parsed: URL
+  try {
+    parsed = new URL(origin)
+  } catch {
+    return false
+  }
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password
+    || parsed.pathname !== '/' || parsed.search || parsed.hash
+    || parsed.origin !== origin || globalThis.location.origin !== origin
+    || !/^[A-Za-z0-9.:[\]-]+$/.test(parsed.host)) {
+    return false
+  }
+  return command === `${PAIRING_HELPER_PREFIX}${origin}${PAIRING_HELPER_ROUTE} | python3 - ${pairingId} --server ${origin}`
+}
+
 async function startPairingFetch(id: string, signal?: AbortSignal): Promise<PairingStart> {
   if (!/^[A-Za-z0-9-]{1,128}$/.test(id)) throw new Error('pairing_start_invalid')
   const response = await fetch(`/api/agents/connections/${id}/chatgpt/pairings`, {
@@ -2031,15 +2055,23 @@ async function startPairingFetch(id: string, signal?: AbortSignal): Promise<Pair
     parsed = value as Record<string, unknown>
 
     const keys = Object.keys(parsed)
-    if (keys.length !== 3 || !keys.includes('pairing_id') || !keys.includes('secret') || !keys.includes('expires_at')) {
+    if (keys.length !== 4 || !keys.includes('pairing_id') || !keys.includes('secret')
+      || !keys.includes('expires_at') || !keys.includes('helper_command')) {
       throw new Error('pairing_start_invalid')
     }
     const pairingId = parsed.pairing_id
     const expiresAt = parsed.expires_at
+    const helperCommand = parsed.helper_command
     secretValue = parsed.secret
     if (typeof pairingId !== 'string' || pairingId.length < 1 || pairingId.length > 128
       || typeof expiresAt !== 'string' || expiresAt.length < 1 || expiresAt.length > 64
       || !Number.isFinite(Date.parse(expiresAt))
+      || typeof helperCommand !== 'string' || helperCommand.length < 1 || helperCommand.length > 4096
+      || Array.from(helperCommand).some((character) => {
+        const codePoint = character.codePointAt(0) ?? 0
+        return codePoint <= 0x1f || codePoint === 0x7f
+      })
+      || !isCanonicalHelperCommand(helperCommand, pairingId)
       || typeof secretValue !== 'string' || secretValue.length < 1 || secretValue.length > 4096) {
       throw new Error('pairing_start_invalid')
     }
@@ -2047,7 +2079,7 @@ async function startPairingFetch(id: string, signal?: AbortSignal): Promise<Pair
     const secretBytes = new TextEncoder().encode(secret)
     parsed.secret = ''
     Reflect.deleteProperty(parsed, 'secret')
-    return { pairing_id: pairingId, expires_at: expiresAt, secretBytes }
+    return { pairing_id: pairingId, expires_at: expiresAt, helper_command: helperCommand, secretBytes }
   } catch (error) {
     if (error instanceof Error && error.message.startsWith('pairing_start_')) throw error
     if (!success) throw new Error('pairing_start_unavailable')

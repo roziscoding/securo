@@ -1,22 +1,24 @@
 # Securo Sign in with ChatGPT helper
 
-This standalone Python 3.11+ tool completes a Securo pairing on the same computer as your browser. OAuth credentials go directly from this process to Securo and are never sent through the Securo web frontend. Read the full [user and operations guide](../../docs/SIGN_IN_WITH_CHATGPT.md) before using it against a remote or production installation.
+This standalone Python 3.11+ tool completes a Securo pairing on the same computer as your browser. OAuth credentials go directly from this process to Securo and are never sent through the Securo web frontend. Read the full [user and operations guide](../../../docs/SIGN_IN_WITH_CHATGPT.md) before using it against a remote or production installation.
 
-## Install
+## Run from a Securo installation
+
+Start a pairing in Securo and copy the command shown by the pairing dialog. The running backend serves a version-matched bootstrap and helper wheel, so normal users do not need to clone this repository or install a helper package.
+
+## Development install
+
+For helper development or a protected secret-manager pipe, install from a trusted checkout:
 
 ```console
-git clone https://github.com/securo-finance/securo.git
-cd securo
 python -m venv .venv-siwc
 # Linux/macOS: . .venv-siwc/bin/activate
 # Windows PowerShell: .\.venv-siwc\Scripts\Activate.ps1
-python -m pip install ./tools/securo-siwc
+python -m pip install ./backend/tools/securo-siwc
 securo-siwc --help
 ```
 
-The helper is currently packaged from the Securo source tree; this repository
-does not claim a PyPI release or native installer. Install the version matching
-your server checkout, or install a wheel built from that checkout.
+The standalone package is built from the helper source embedded in the Securo backend. This repository does not claim a PyPI release or native installer; use the checkout matching the server.
 
 ## Run
 

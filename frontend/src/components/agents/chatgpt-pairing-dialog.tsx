@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { agents } from '@/lib/api'
 import type { LlmConnection, OAuthModel, PairingFailureCode, PairingState } from '@/lib/api'
 import { cancelAgentConnectionsList, upsertAgentConnection } from '@/lib/agent-connections-cache'
-import { chatGptHelperCommand, normalizeOAuthModels } from './chatgpt-pairing-utils'
+import { normalizeOAuthModels } from './chatgpt-pairing-utils'
 
 interface Props {
   open: boolean
@@ -23,7 +23,7 @@ interface Props {
 }
 
 type Phase = 'idle' | 'starting' | PairingState | 'expired' | 'network' | 'reconciling'
-type PublicPairing = { pairingId: string; expiresAt: string }
+type PublicPairing = { pairingId: string; expiresAt: string; helperCommand: string }
 const TERMINAL = new Set<Phase>(['completed', 'failed', 'cancelled', 'expired'])
 const POLL_DELAY_MS = 2000
 const MAX_POLL_DELAY_MS = 15_000
@@ -247,7 +247,11 @@ export function ChatGptPairingDialog({ open, connection, onOpenChange, onComplet
       const controller = new AbortController()
       abortRef.current = controller
       void agents.connections.startPairing(connectionId, controller.signal).then((started) => {
-        const current = { pairingId: started.pairing_id, expiresAt: started.expires_at }
+        const current = {
+          pairingId: started.pairing_id,
+          expiresAt: started.expires_at,
+          helperCommand: started.helper_command,
+        }
         if (ownGeneration !== generation.current || controller.signal.aborted) {
           started.secretBytes.fill(0)
           void cancelAndReconcile(current, connectionId)
@@ -372,7 +376,7 @@ export function ChatGptPairingDialog({ open, connection, onOpenChange, onComplet
     }
   }
 
-  const command = pairing && currentLocation ? chatGptHelperCommand(pairing.pairingId, currentLocation) : null
+  const command = pairing?.helperCommand ?? null
   const statusKey = `agents.connections.chatgpt.status.${phase}`
   const failureKey = failure ? SAFE_FAILURES[failure] : null
   const nondismissible = phase === 'starting' || phase === 'reconciling'

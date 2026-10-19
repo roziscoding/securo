@@ -20,6 +20,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 from typing import Any, cast
 from urllib.parse import parse_qs, urlencode, urlsplit
 from unittest.mock import patch
@@ -28,7 +29,7 @@ import httpx
 import pytest
 from sqlalchemy import select, update
 
-_HELPER_SRC = Path(__file__).parents[3] / "tools" / "securo-siwc" / "src"
+_HELPER_SRC = Path(__file__).parents[2] / "app" / "agents" / "_siwc_helper"
 _ROOT = Path(__file__).parents[3]
 if str(_HELPER_SRC) not in sys.path:
     sys.path.insert(0, str(_HELPER_SRC))
@@ -588,6 +589,10 @@ async def test_assembled_pair_refresh_revoke_reconnect_executor_lifecycle(
     postgres_sessions, monkeypatch, caplog, tmp_path
 ):
     fake = FakeOpenAI()
+    monkeypatch.setattr(
+        "app.agents.api.oauth_pairing.get_settings",
+        lambda: SimpleNamespace(frontend_url="https://securo.example"),
+    )
     caplog.set_level(logging.INFO, logger="app.agents.siwc")
     sentinels: set[str] = set()
     runtime_artifacts: list[object] = []
@@ -1338,10 +1343,11 @@ async def test_assembled_pair_refresh_revoke_reconnect_executor_lifecycle(
                 sys.executable,
                 "-m",
                 "build",
+                "--wheel",
                 "--outdir",
                 str(distributions),
             ],
-            cwd=_ROOT / "tools" / "securo-siwc",
+            cwd=_ROOT / "backend" / "tools" / "securo-siwc",
             capture_output=True,
             text=True,
             check=False,
@@ -1360,9 +1366,10 @@ async def test_assembled_pair_refresh_revoke_reconnect_executor_lifecycle(
                 str(_ROOT / "backend" / "tests"),
                 str(_ROOT / "frontend" / "src"),
                 str(_ROOT / "docs"),
-                str(_ROOT / "tools" / "securo-siwc" / "README.md"),
-                str(_ROOT / "tools" / "securo-siwc" / "src"),
-                str(_ROOT / "tools" / "securo-siwc" / "tests"),
+                str(_ROOT / "backend" / "tools" / "securo-siwc" / "README.md"),
+                str(_ROOT / "backend" / "tools" / "securo-siwc" / "pyproject.toml"),
+                str(_ROOT / "backend" / "app" / "agents" / "_siwc_helper"),
+                str(_ROOT / "backend" / "tools" / "securo-siwc" / "tests"),
                 str(distributions),
             ],
             capture_output=True,

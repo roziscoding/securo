@@ -72,6 +72,9 @@ dev = [
 [tool.setuptools.packages.find]
 include = ["app*"]
 
+[tool.setuptools.package-data]
+"app.agents._siwc_helper" = ["requirements.lock"]
+
 [tool.pytest.ini_options]
 # Fail on configuration/marker typos, duplicate parameter IDs and unexpected
 # xfail passes instead of silently weakening the suite.

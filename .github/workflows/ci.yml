@@ -141,8 +141,10 @@ jobs:
         run: |
           python3 .github/ci/scan_siwc_artifacts.py \
             backend/app backend/tests frontend/src docs \
-            tools/securo-siwc/src tools/securo-siwc/tests \
-            tools/securo-siwc/README.md README.md \
+            backend/app/agents/_siwc_helper backend/tools/securo-siwc/tests \
+            backend/tools/securo-siwc/README.md \
+            backend/tools/securo-siwc/pyproject.toml \
+            backend/app/agents/_siwc_helper/requirements.lock README.md \
             .github/ci .github/workflows/ci.yml
 
   siwc-helper:
@@ -150,7 +152,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: tools/securo-siwc
+        working-directory: backend/tools/securo-siwc
 
     steps:
       - uses: actions/checkout@v7
@@ -179,16 +181,21 @@ jobs:
       - name: Lint, type check, and run helper tests
         if: steps.helper-changes.outputs.run_helper != 'false'
         run: |
-          ruff check .
-          ty check --python "$(command -v python)" src tests
+          ruff check ../../app/agents/_siwc_helper/securo_siwc tests
+          ty check --python "$(command -v python)" ../../app/agents/_siwc_helper/securo_siwc tests
           pytest -q
+
+      - name: Validate installation-served wheel and platform lock
+        if: steps.helper-changes.outputs.run_helper != 'false'
+        working-directory: .
+        run: python3 .github/ci/check_siwc_distribution.py
 
       - name: Build and validate distributions
         if: steps.helper-changes.outputs.run_helper != 'false'
         run: |
-          python -m build
-          python -m twine check dist/*
-          python ../../.github/ci/scan_siwc_artifacts.py dist
+          python -m build --wheel
+          python -m twine check dist/*.whl
+          python ../../../.github/ci/scan_siwc_artifacts.py dist
 
       - name: Install built wheel and smoke CLI
         if: steps.helper-changes.outputs.run_helper != 'false'

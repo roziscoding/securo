@@ -13,7 +13,7 @@
 > `backend/tests/test_agents_oauth_helper_parity.py`,
 > `backend/tests/test_agents_openai_chatgpt_provider.py` e
 > `backend/tests/integration/`; os testes do helper ficam em
-> `tools/securo-siwc/tests/`. Migrações atuais: 097 (credenciais), 098
+> `backend/tools/securo-siwc/tests/`. Migrações atuais: 097 (credenciais), 098
 > (scrubbing/leases) e 099 (pairings).
 
 ## Resumo executivo

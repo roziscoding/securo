@@ -37,7 +37,7 @@ dev = [
 securo-siwc = "securo_siwc.cli:main"
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["../../app/agents/_siwc_helper"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

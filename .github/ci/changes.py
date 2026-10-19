@@ -36,15 +36,18 @@ def changed_jobs():
             raise ValueError("empty or incomplete changed-file list")
         backend = frontend = helm = helper = False
         for path in diff[:-1].split(b"\0"):
-            if path.startswith(b"backend/"):
+            if (
+                path.startswith(b"backend/tools/securo-siwc/")
+                or path.startswith(b"backend/app/agents/_siwc_helper/")
+            ):
+                # Backend parity/integration tests import the helper source.
+                backend = helper = True
+            elif path.startswith(b"backend/"):
                 backend = True
             elif path.startswith(b"frontend/"):
                 frontend = True
             elif path.startswith(b"charts/securo/"):
                 helm = True
-            elif path.startswith(b"tools/securo-siwc/"):
-                # Backend parity/integration tests import the helper source.
-                backend = helper = True
             elif path in PROSE or (path.startswith(b"docs/") and path.endswith(b".md")):
                 continue
             else:

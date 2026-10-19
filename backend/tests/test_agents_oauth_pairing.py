@@ -28,7 +28,7 @@ from app.agents.api.oauth_pairing import (
     helper_status,
     user_pairing_status,
 )
-from app.agents.schemas.oauth_pairing import CompletionRequest, PairingStatus
+from app.agents.schemas.oauth_pairing import CompletionRequest, PairingStart, PairingStatus
 from app.agents.models.oauth_credential import OpenAIOAuthCredential
 from app.agents.models.connection import LlmConnection
 from app.agents.models.oauth_pairing import OpenAIOAuthPairing
@@ -129,6 +129,28 @@ def test_pairing_status_openapi_is_closed_sanitized_and_secret_free():
         "resource_cleanup_pending", "credential_busy", "start_outcome_unknown",
     }
     assert "secret" not in str(schema).lower()
+
+
+def test_pairing_start_contract_includes_only_secret_and_public_helper_command():
+    now = datetime.now(timezone.utc)
+    pairing_id = uuid.uuid4()
+    parsed = PairingStart.model_validate(
+        {
+            "pairing_id": pairing_id,
+            "secret": "s" * 43,
+            "expires_at": now,
+            "helper_command": "curl helper | python3 - pairing",
+        }
+    )
+    assert parsed.helper_command.endswith("pairing")
+    with pytest.raises(ValueError):
+        PairingStart.model_validate({**parsed.model_dump(), "unexpected": "value"})
+
+    schema = app.openapi()["components"]["schemas"]["PairingStart"]
+    assert schema["additionalProperties"] is False
+    assert set(schema["properties"]) == {
+        "pairing_id", "secret", "expires_at", "helper_command"
+    }
 
 
 @pytest.mark.asyncio
@@ -837,10 +859,16 @@ def test_pairable_credential_predicate_blocks_every_unsafe_resource_state():
 
 @pytest.mark.asyncio
 async def test_user_start_endpoint_returns_secret_once_and_no_store(
-    client, auth_headers, session, clean_db, test_user
+    client, auth_headers, session, clean_db, test_user, monkeypatch
 ):
     from app.core.rate_limit import pairing_start_rate_limit
     from app.main import app
+
+    monkeypatch.setattr(
+        pairing_api, "get_settings", lambda: types.SimpleNamespace(
+            frontend_url="https://securo.example/"
+        )
+    )
 
     connection = LlmConnection(
         user_id=test_user.id, name="ChatGPT", kind="openai_chatgpt", extra={}
@@ -857,7 +885,16 @@ async def test_user_start_endpoint_returns_secret_once_and_no_store(
         app.dependency_overrides.pop(pairing_start_rate_limit, None)
     assert response.status_code == 201
     assert response.headers["cache-control"] == "no-store"
-    secret = response.json()["secret"]
+    payload = response.json()
+    assert set(payload) == {"pairing_id", "secret", "expires_at", "helper_command"}
+    assert payload["helper_command"] == (
+        "curl --disable --noproxy '*' --proto '=https' --tlsv1.2 "
+        "--fail --silent --show-error "
+        "https://securo.example/api/agents/chatgpt/securo-siwc.py | "
+        f"python3 - {payload['pairing_id']} --server https://securo.example"
+    )
+    secret = payload["secret"]
+    assert secret not in payload["helper_command"]
     row = await session.scalar(select(OpenAIOAuthPairing))
     assert row is not None and secret not in row.secret_digest
     status_response = await client.get(

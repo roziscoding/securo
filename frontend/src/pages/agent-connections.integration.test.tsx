@@ -63,6 +63,7 @@ it('traces the whole ChatGPT connection lifecycle through the real page and dial
       pairing_id: `pair-${pairNumber}`,
       secretBytes: encoder.encode(secret),
       expires_at: new Date(Date.now() + 60_000).toISOString(),
+      helper_command: `curl --disable --noproxy '*' --proto '=https' --tlsv1.2 --fail --silent --show-error https://securo.example/api/agents/chatgpt/securo-siwc.py | python3 - pair-${pairNumber} --server https://securo.example`,
     }
   })
   api.pairingStatus.mockImplementation(async (_id, pairingId) => {
@@ -105,6 +106,7 @@ it('traces the whole ChatGPT connection lifecycle through the real page and dial
   await view.user.click(screen.getByRole('button', { name: 'Create and continue' }))
 
   expect(await screen.findByText('terminal-secret-1')).toBeVisible()
+  expect(screen.getByText("curl --disable --noproxy '*' --proto '=https' --tlsv1.2 --fail --silent --show-error https://securo.example/api/agents/chatgpt/securo-siwc.py | python3 - pair-1 --server https://securo.example")).toBeVisible()
   expect(screen.getByText('Waiting for the helper…')).toBeVisible()
   await act(async () => pending.get('pair-1')?.('completed'))
   const model = await screen.findByRole('combobox', { name: 'Choose a ChatGPT model' })

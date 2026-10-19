@@ -10,7 +10,7 @@ from app.agents.services import openai_oauth
 
 
 ROOT = Path(__file__).parents[2]
-HELPER = ROOT / "tools" / "securo-siwc" / "src" / "securo_siwc" / "openai.py"
+HELPER = ROOT / "backend" / "app" / "agents" / "_siwc_helper" / "securo_siwc" / "openai.py"
 EXCLUDED_PARTS = {
     ".git",
     ".pytest_cache",
@@ -44,7 +44,7 @@ def _helper_constants() -> dict[str, str]:
 
 
 def _production_sources() -> list[Path]:
-    roots = [ROOT / "backend" / "app", ROOT / "frontend" / "src", ROOT / "tools" / "securo-siwc" / "src"]
+    roots = [ROOT / "backend" / "app", ROOT / "frontend" / "src"]
     return [
         path
         for root in roots
@@ -113,9 +113,11 @@ def test_ci_always_scans_repository_sources_independently_of_helper_selection():
         "backend/tests",
         "frontend/src",
         "docs",
-        "tools/securo-siwc/src",
-        "tools/securo-siwc/tests",
-        "tools/securo-siwc/README.md",
+        "backend/app/agents/_siwc_helper",
+        "backend/tools/securo-siwc/tests",
+        "backend/tools/securo-siwc/README.md",
+        "backend/tools/securo-siwc/pyproject.toml",
+        "backend/app/agents/_siwc_helper/requirements.lock",
         ".github/ci",
         ".github/workflows/ci.yml",
     ):

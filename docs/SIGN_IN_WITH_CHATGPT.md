@@ -30,53 +30,49 @@ The helper binds the callback to literal `127.0.0.1`, not `localhost`, on the co
 - A stable production `SECRET_KEY`; changing it makes existing encrypted credentials unreadable.
 - PostgreSQL migrated through the current head.
 - A public Securo **HTTPS origin** reachable from the user's computer. The helper rejects plain HTTP, redirects, URL credentials, paths, query strings, and fragments. Literal `http://127.0.0.1:<port>` is a hidden test-only exception, not a deployment mode.
-- Python 3.11 or newer on the computer running the helper (Linux, macOS, or Windows).
+- Python 3.11 or newer on the computer running the helper (Linux, Windows, macOS 11+ on Apple Silicon, or macOS 10.15+ on Intel).
 - For scheduled proactive refresh, both a Celery worker and Celery beat. Beat enqueues `refresh-agent-oauth-near-expiry` every five minutes only while agents are enabled. On-demand inference can refresh without beat, but running worker/beat avoids preventable expiry at first use.
 
 For remote Docker, VM, LXC, or Kubernetes installations, put Securo behind a TLS-terminating reverse proxy and set `FRONTEND_URL` to the external HTTPS origin. Preserve the original host and scheme headers according to the existing Securo reverse-proxy configuration. The helper connects to that public origin; do not forward the helper's `127.0.0.1` callback port to the server.
 
-## Install the helper
+## Run the version-matched helper
 
-The helper currently ships in the Securo source tree; there is no claimed PyPI release. Install from the same trusted checkout/version as the server when possible.
+Securo serves a small, auditable Python bootstrap plus a deterministic wheel built from the exact helper source in the running backend image. The bootstrap installs only hash-locked binary dependencies from PyPI, verifies the wheel SHA-256, and never falls back to source distributions. The pairing dialog generates the complete command from the configured `FRONTEND_URL`; no repository clone, preinstalled `securo-siwc` command, PyPI helper package, or native helper binary is required.
 
 ### Linux and macOS
 
+Copy the helper command shown in the pairing dialog. Its shape is:
+
 ```console
-git clone https://github.com/securo-finance/securo.git
-cd securo
-python3 -m venv .venv-siwc
-. .venv-siwc/bin/activate
-python -m pip install ./tools/securo-siwc
-securo-siwc --help
+curl --disable --noproxy '*' --proto '=https' --tlsv1.2 --fail --silent --show-error https://securo.example/api/agents/chatgpt/securo-siwc.py | python3 - <PAIRING_ID> --server https://securo.example
 ```
 
-For an existing checkout, update it using your normal verified upgrade process before installing. A source archive or built wheel produced by that checkout can be copied to the user's computer and installed with `python -m pip install <wheel>`.
+The bootstrap requires Python 3.11+, downloads the matching helper wheel from the same HTTPS origin without redirects or ambient proxies, verifies its SHA-256 digest, installs hash-locked dependencies and the wheel in a private temporary virtual environment, runs it, and removes that environment on exit.
 
 ### Windows PowerShell
 
+Use the command from the dialog, replacing `curl` with `curl.exe` and `python3` with `py -3` if those are the native command names on the computer:
+
 ```powershell
-git clone https://github.com/securo-finance/securo.git
-Set-Location securo
-py -3.11 -m venv .venv-siwc
-.\.venv-siwc\Scripts\Activate.ps1
-python -m pip install .\tools\securo-siwc
+curl.exe --disable --noproxy '*' --proto '=https' --tlsv1.2 --fail --silent --show-error https://securo.example/api/agents/chatgpt/securo-siwc.py | py -3 - <PAIRING_ID> --server https://securo.example
+```
+
+For helper development or a protected secret-manager pipe, install from a trusted checkout instead:
+
+```console
+python -m pip install ./backend/tools/securo-siwc
 securo-siwc --help
 ```
 
-Do not add the pairing secret to an installer command, shell profile, environment variable, configuration file, URL, or shortcut.
+Do not add the pairing secret to the bootstrap command, shell profile, environment variable, configuration file, URL, or shortcut.
 
 ## Pair a ChatGPT plan
 
 1. In Securo, open **Settings → AI Agents → Connections**.
 2. Choose **OpenAI — ChatGPT plan**, give the connection a name, and create the pairing.
-3. Copy the public pairing ID and keep the separately displayed one-time pairing secret private.
-4. On the same computer as the browser, run:
-
-   ```console
-   securo-siwc <PAIRING_ID> --server https://securo.example
-   ```
-
-5. Enter the pairing secret only at the helper's hidden `Pairing secret:` prompt. It is intentionally unsupported in argv, environment variables, configuration files, or URLs. `--secret-stdin` exists for a protected local pipe from a secret manager; avoid interactive shell history and never use a world-readable file.
+3. Copy the public helper command and keep the separately displayed one-time pairing secret private.
+4. On the same computer as the browser, run the command exactly as shown. It fetches the version-matched bootstrap from your Securo installation; the command contains the public pairing ID but never the secret.
+5. Enter the pairing secret only at the helper's hidden `Pairing secret:` prompt. It is intentionally unsupported in argv, environment variables, configuration files, or URLs. Because the bootstrap itself arrives through stdin, `--secret-stdin` is unavailable in this pipeable mode; install the helper from a trusted checkout when a protected local secret-manager pipe is required.
 6. Complete authorization in the browser. The browser returns to a temporary literal `http://127.0.0.1:<ephemeral-port>/auth/callback` listener on that computer.
 7. Wait for `ChatGPT authorization transferred to Securo.` and for Securo to show an active connection. Close any authorization tab that remains open.
 8. Test the connection and select one of the models returned for that account.
@@ -211,4 +207,4 @@ Prepare one disposable test user/connection on a non-production Securo instance 
 - The helper cannot traverse an authenticated proxy and intentionally ignores ambient proxy configuration.
 - A remote Securo server still requires a helper on the browser computer because OpenAI returns to literal loopback.
 
-For protocol and design history, see [the implementation study](SIWC_IMPLEMENTATION_STUDY.md). For helper-specific development details, see [`tools/securo-siwc/README.md`](../tools/securo-siwc/README.md).
+For protocol and design history, see [the implementation study](SIWC_IMPLEMENTATION_STUDY.md). For helper-specific development details, see [`backend/tools/securo-siwc/README.md`](../backend/tools/securo-siwc/README.md).

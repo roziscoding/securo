@@ -84,9 +84,9 @@ class CIChangesTest(unittest.TestCase):
             ({"backend/new.py": "code", "frontend/new.ts": "code"}, ("true", "true", "false", "false", "true")),
             ({"charts/securo/new.yaml": "chart"}, ("false", "false", "true", "false", "true")),
             ({"charts/securo/README.md": "docs"}, ("false", "false", "true", "false", "true")),
-            ({"tools/securo-siwc/src/securo_siwc/cli.py": "code"},
+            ({"backend/app/agents/_siwc_helper/securo_siwc/cli.py": "code"},
              ("true", "false", "false", "true", "true")),
-            ({"tools/securo-siwc/README.md": "docs"},
+            ({"backend/tools/securo-siwc/README.md": "docs"},
              ("true", "false", "false", "true", "true")),
         ]
         for name in (".github/workflows/ci.yml", ".github/ci/changes.py",

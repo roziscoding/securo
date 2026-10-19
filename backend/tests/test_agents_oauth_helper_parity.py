@@ -16,7 +16,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from jose import jwt
 
-sys.path.insert(0, str(Path(__file__).parents[2] / "tools/securo-siwc/src"))
+sys.path.insert(0, str(Path(__file__).parents[1] / "app/agents/_siwc_helper"))
 from securo_siwc import openai as helper_oauth  # ty: ignore[unresolved-import]  # noqa: E402
 
 from app.agents.services import openai_oauth as backend_oauth  # noqa: E402
