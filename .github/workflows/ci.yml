@@ -77,7 +77,8 @@ jobs:
 
       - name: Type check with ty
         if: steps.backend-changes.outputs.run_backend != 'false'
-        run: uv run --no-sync ty check .
+        # The standalone helper has its own environment and type-check job below.
+        run: uv run --no-sync ty check --exclude tools/securo-siwc .
 
       - name: Run tests with coverage
         if: steps.backend-changes.outputs.run_backend != 'false'
@@ -182,7 +183,9 @@ jobs:
         if: steps.helper-changes.outputs.run_helper != 'false'
         run: |
           ruff check ../../app/agents/_siwc_helper/securo_siwc tests
-          ty check --python "$(command -v python)" ../../app/agents/_siwc_helper/securo_siwc tests
+          ty check --python "$(command -v python)" \
+            --extra-search-path ../../app/agents/_siwc_helper \
+            ../../app/agents/_siwc_helper/securo_siwc tests
           pytest -q
 
       - name: Validate installation-served wheel and platform lock
