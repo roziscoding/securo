@@ -60,3 +60,5 @@ class RateLimiter:
 login_rate_limit = RateLimiter(max_requests=5, window_seconds=60)
 register_rate_limit = RateLimiter(max_requests=3, window_seconds=3600)
 password_reset_rate_limit = RateLimiter(max_requests=3, window_seconds=3600)
+pairing_start_rate_limit = RateLimiter(max_requests=10, window_seconds=60)
+pairing_helper_rate_limit = RateLimiter(max_requests=30, window_seconds=60)

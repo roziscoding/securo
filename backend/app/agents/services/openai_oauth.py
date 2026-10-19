@@ -19,8 +19,7 @@ import logging
 import math
 import re
 import ssl
-import traceback as traceback_module
-import types
+
 from typing import Any, Callable
 from urllib.parse import urlencode
 
@@ -30,6 +29,8 @@ from jose import JWTError, jwt
 
 from app.agents.services.oauth_credentials import CredentialBundle, sanitize_account_email
 from app.agents.config import get_agent_settings
+from app.core.secret_scrub import clear_traceback as _bounded_clear_traceback
+from app.core.secret_scrub import scrub_graph as _bounded_scrub_graph
 
 ISSUER = "https://auth.openai.com"
 TOKEN_ENDPOINT = f"{ISSUER}/api/accounts/oauth/token"
@@ -93,6 +94,23 @@ class OAuthLifecycleError(RuntimeError):
         self.retryable = retryable
 
 
+def _oauth_error_message(error: OAuthLifecycleError) -> str:
+    """Read an internally-created fixed message without invoking __str__."""
+    if type(error) is not OAuthLifecycleError:
+        return "OAuth operation failed safely"
+    try:
+        arguments = BaseException.__dict__["args"].__get__(error, type(error))
+    except BaseException:
+        return "OAuth operation failed safely"
+    if (
+        type(arguments) is tuple
+        and len(arguments) == 1
+        and type(arguments[0]) is str
+    ):
+        return arguments[0]
+    return "OAuth operation failed safely"
+
+
 @dataclass(frozen=True)
 class ValidatedTokenBundle:
     bundle: CredentialBundle
@@ -142,118 +160,32 @@ def _safe_error(
     return OAuthLifecycleError(code, message, definitive=definitive, retryable=retryable)
 
 
-def _scrub_reachable_value(value: Any, seen: set[int]) -> None:
-    """Best-effort in-place erasure without invoking arbitrary descriptors."""
-    if value is None or id(value) in seen:
-        return
-    if isinstance(value, httpx.Response):
-        _scrub_response(value, _seen=seen)
-        return
-    if isinstance(value, httpx.Request):
-        _scrub_request(value, _seen=seen)
-        return
-    if isinstance(value, BaseException):
-        _discard_exception_secrets(value, _seen=seen)
-        return
-    if isinstance(value, (Enum, type, types.ModuleType, types.FunctionType, types.CodeType)):
-        return
-    seen.add(id(value))
-    if isinstance(value, bytearray):
-        value.clear()
-        return
-    if isinstance(value, dict):
-        for key, item in list(value.items()):
-            _scrub_reachable_value(key, seen)
-            _scrub_reachable_value(item, seen)
-        value.clear()
-        return
-    if isinstance(value, list):
-        for item in value:
-            _scrub_reachable_value(item, seen)
-        value.clear()
-        return
-    if isinstance(value, set):
-        for item in list(value):
-            _scrub_reachable_value(item, seen)
-        value.clear()
-        return
-    if isinstance(value, (tuple, frozenset)):
-        for item in value:
-            _scrub_reachable_value(item, seen)
+_EXCEPTION_DESCRIPTORS = {
+    name: BaseException.__dict__[name]
+    for name in ("args", "__cause__", "__context__", "__traceback__", "__dict__")
+}
 
-        return
-    # Use only native dictionary/member descriptors from the class graph.
-    # getattr/object.__getattribute__ could still invoke an arbitrary property.
-    for cls in type(value).__mro__:
-        dictionary_descriptor = cls.__dict__.get("__dict__")
-        if isinstance(dictionary_descriptor, types.GetSetDescriptorType):
-            try:
-                dictionary = dictionary_descriptor.__get__(value, type(value))
-            except (AttributeError, TypeError):
-                continue
-            if isinstance(dictionary, dict):
-                _scrub_reachable_value(dictionary, seen)
-        for descriptor in cls.__dict__.values():
-            if not isinstance(descriptor, types.MemberDescriptorType):
-                continue
-            try:
-                item = descriptor.__get__(value, type(value))
-            except AttributeError:
-                continue
-            _scrub_reachable_value(item, seen)
-            try:
-                descriptor.__set__(value, None)
-            except (AttributeError, TypeError):
-                # Native read-only slots cannot own a removable reference.
-                continue
+
+def _base_exception_get(error: BaseException, name: str) -> object:
+    try:
+        return _EXCEPTION_DESCRIPTORS[name].__get__(error, type(error))
+    except BaseException:
+        return None
+
+
+
+def _clear_exception_traceback(traceback: object) -> None:
+    _bounded_clear_traceback(traceback)
 
 
 def _discard_exception_secrets(
     error: BaseException, *, _seen: set[int] | None = None
 ) -> None:
-    """Detach exception graphs, including writable slots, without hostile getattr."""
-    pending: list[BaseException] = [error]
-    seen = _seen if _seen is not None else set()
-    while pending:
-        current = pending.pop()
-        if id(current) in seen:
-            continue
-        seen.add(id(current))
-        if current.__cause__ is not None:
-            pending.append(current.__cause__)
-        if current.__context__ is not None:
-            pending.append(current.__context__)
-        traceback = current.__traceback__
-        if traceback is not None:
-            traceback_module.clear_frames(traceback)
-        for item in current.args:
-            _scrub_reachable_value(item, seen)
-        for item in list(current.__dict__.values()):
-            _scrub_reachable_value(item, seen)
-        for cls in type(current).__mro__:
-            slots = cls.__dict__.get("__slots__", ())
-            if isinstance(slots, str):
-                slots = (slots,)
-            for slot in slots:
-                if slot in {"__dict__", "__weakref__"}:
-                    continue
-                descriptor = cls.__dict__.get(slot)
-                if not isinstance(descriptor, types.MemberDescriptorType):
-                    continue
-                try:
-                    item = descriptor.__get__(current, type(current))
-                except AttributeError:
-                    continue
-                _scrub_reachable_value(item, seen)
-                try:
-                    descriptor.__set__(current, None)
-                except (AttributeError, TypeError) as exc:
-                    raise RuntimeError("OAuth exception slot could not be scrubbed") from exc
-        current.args = ()
-        current.__traceback__ = None
-        current.__cause__ = None
-        current.__context__ = None
-        current.__dict__.clear()
+    """Detach an exception graph without recursion or attacker hooks."""
+    try:
+        _bounded_scrub_graph(error, _seen)
+    except BaseException:
+        pass
 
 
 def _reject_duplicate_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -266,20 +198,31 @@ def _reject_duplicate_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def _strict_json_bytes(data: bytes) -> Any:
-    return json.loads(
+    if len(data) > MAX_HTTP_RESPONSE_BYTES:
+        raise ValueError("JSON exceeds bounds")
+    value = json.loads(
         data,
         object_pairs_hook=_reject_duplicate_members,
         parse_constant=lambda value: (_ for _ in ()).throw(
             ValueError(f"invalid JSON constant: {value}")
         ),
     )
+    _validate_json_graph(value)
+    return value
 
 
 def _strict_jose_segment(encoded: str, index: int) -> dict[str, Any]:
     segments = encoded.split(".")
-    if len(segments) != 3 or not _BASE64URL_SEGMENT.fullmatch(segments[index]):
+    if (
+        len(segments) != 3
+        or not segments[index]
+        or len(segments[index]) > MAX_TOKEN_LENGTH
+        or not _BASE64URL_SEGMENT.fullmatch(segments[index])
+    ):
         raise ValueError("invalid JOSE segment")
     raw = base64.urlsafe_b64decode(segments[index] + "=" * (-len(segments[index]) % 4))
+    if base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii") != segments[index]:
+        raise ValueError("noncanonical JOSE segment")
     parsed = _strict_json_bytes(raw)
     if not isinstance(parsed, dict):
         raise ValueError("invalid JOSE object")
@@ -293,45 +236,52 @@ def safe_oauth_boundary(function):
     async def guarded(*args, **kwargs):
         metadata: tuple[OAuthFailureCode, str, bool, bool] | None = None
         failure_kind: str | None = None
-        internal_traceback = None
+        internal_traceback: object = None
+        soft_limit: SoftTimeLimitExceeded | None = None
         try:
             return await function(*args, **kwargs)
         except SoftTimeLimitExceeded as exc:
-            internal_traceback = exc.__traceback__
+            soft_limit = exc
+            internal_traceback = _base_exception_get(exc, "__traceback__")
             _discard_exception_secrets(exc)
-            raise
         except OAuthLifecycleError as exc:
-            metadata = (exc.code, str(exc), exc.definitive, exc.retryable)
-            internal_traceback = exc.__traceback__
+            if type(exc) is OAuthLifecycleError:
+                metadata = (
+                    object.__getattribute__(exc, "code"),
+                    _oauth_error_message(exc),
+                    object.__getattribute__(exc, "definitive"),
+                    object.__getattribute__(exc, "retryable"),
+                )
+            else:
+                failure_kind = "unexpected"
+            internal_traceback = _base_exception_get(exc, "__traceback__")
             _discard_exception_secrets(exc)
         except asyncio.CancelledError as exc:
             failure_kind = "cancelled"
-            internal_traceback = exc.__traceback__
+            internal_traceback = _base_exception_get(exc, "__traceback__")
             _discard_exception_secrets(exc)
         except LookupError as exc:
             failure_kind = "lookup"
-            internal_traceback = exc.__traceback__
+            internal_traceback = _base_exception_get(exc, "__traceback__")
             _discard_exception_secrets(exc)
         except AssertionError as exc:
             failure_kind = "assertion"
-            internal_traceback = exc.__traceback__
+            internal_traceback = _base_exception_get(exc, "__traceback__")
             _discard_exception_secrets(exc)
-        except BaseException as exc:  # noqa: BLE001 - this is the public secret boundary
+        except BaseException as exc:  # noqa: BLE001 - public secret boundary
             failure_kind = "unexpected"
-            internal_traceback = exc.__traceback__
+            internal_traceback = _base_exception_get(exc, "__traceback__")
             _discard_exception_secrets(exc)
         finally:
-            if internal_traceback is not None:
-                traceback_module.clear_frames(internal_traceback)
+            _clear_exception_traceback(internal_traceback)
             args = ()
             kwargs.clear()
         internal_traceback = None
+        if soft_limit is not None:
+            raise soft_limit from None
         if metadata is not None:
             raise OAuthLifecycleError(
-                metadata[0],
-                metadata[1],
-                definitive=metadata[2],
-                retryable=metadata[3],
+                metadata[0], metadata[1], definitive=metadata[2], retryable=metadata[3]
             ) from None
         if failure_kind == "cancelled":
             raise asyncio.CancelledError() from None
@@ -350,38 +300,49 @@ def _safe_oauth_sync_boundary(function):
     @wraps(function)
     def guarded(*args, **kwargs):
         metadata: tuple[OAuthFailureCode, str, bool, bool] | None = None
-        internal_traceback = None
+        internal_traceback: object = None
+        soft_limit: SoftTimeLimitExceeded | None = None
         try:
             return function(*args, **kwargs)
         except SoftTimeLimitExceeded as exc:
-            internal_traceback = exc.__traceback__
+            soft_limit = exc
+            internal_traceback = _base_exception_get(exc, "__traceback__")
             _discard_exception_secrets(exc)
-            raise
         except OAuthLifecycleError as exc:
-            metadata = (exc.code, str(exc), exc.definitive, exc.retryable)
-            internal_traceback = exc.__traceback__
+            if type(exc) is OAuthLifecycleError:
+                metadata = (
+                    object.__getattribute__(exc, "code"),
+                    _oauth_error_message(exc),
+                    object.__getattribute__(exc, "definitive"),
+                    object.__getattribute__(exc, "retryable"),
+                )
+            else:
+                metadata = (
+                    OAuthFailureCode.CORRUPT_TOKEN,
+                    "Token validation failed safely",
+                    True,
+                    False,
+                )
+            internal_traceback = _base_exception_get(exc, "__traceback__")
             _discard_exception_secrets(exc)
-        except BaseException as exc:  # noqa: BLE001 - this is the public secret boundary
+        except BaseException as exc:  # noqa: BLE001 - public secret boundary
             metadata = (
                 OAuthFailureCode.CORRUPT_TOKEN,
                 "Token validation failed safely",
                 True,
                 False,
             )
-            internal_traceback = exc.__traceback__
+            internal_traceback = _base_exception_get(exc, "__traceback__")
             _discard_exception_secrets(exc)
-        if internal_traceback is not None:
-            traceback_module.clear_frames(internal_traceback)
+        _clear_exception_traceback(internal_traceback)
         args = ()
         kwargs.clear()
-        kwargs = {}
         internal_traceback = None
+        if soft_limit is not None:
+            raise soft_limit from None
         assert metadata is not None
         raise OAuthLifecycleError(
-            metadata[0],
-            metadata[1],
-            definitive=metadata[2],
-            retryable=metadata[3],
+            metadata[0], metadata[1], definitive=metadata[2], retryable=metadata[3]
         ) from None
 
     return guarded
@@ -404,6 +365,17 @@ def _ensure_declared_response_size(response: httpx.Response) -> None:
             )
 
 
+def _ensure_identity_response(response: httpx.Response) -> None:
+    encodings = response.headers.get_list("content-encoding")
+    if len(encodings) > 1 or any(
+        encoding.strip().casefold() not in {"", "identity"} for encoding in encodings
+    ):
+        raise _safe_error(
+            OAuthFailureCode.MALFORMED_RESPONSE,
+            "OAuth provider content encoding was rejected",
+        )
+
+
 def _ensure_response_size(response: httpx.Response) -> None:
     _ensure_declared_response_size(response)
     if len(response.content) > MAX_HTTP_RESPONSE_BYTES:
@@ -419,45 +391,19 @@ def _sanitized_request(request: httpx.Request) -> httpx.Request:
 
 
 def _scrub_request(request: httpx.Request, *, _seen: set[int] | None = None) -> None:
-    """Erase all mutable request state that can contain bearer material."""
-    seen = _seen if _seen is not None else set()
-    if id(request) in seen:
-        return
-    seen.add(id(request))
-    for value in list(request.extensions.values()):
-        _scrub_reachable_value(value, seen)
-    request.headers.clear()
-    request.extensions.clear()
-    request._content = b""
-    request.stream = httpx.ByteStream(b"")
+    """Erase all mutable request state within fixed resource bounds."""
+    try:
+        _bounded_scrub_graph(request, _seen)
+    except BaseException:
+        pass
 
 
 def _scrub_response(response: httpx.Response, *, _seen: set[int] | None = None) -> None:
-    """Erase and detach every request/response reachable from a response."""
-    seen = _seen if _seen is not None else set()
-    if id(response) in seen:
-        return
-    seen.add(id(response))
-    next_request = response.next_request
-    history = list(response.history)
-    extension_values = list(response.extensions.values())
-    response.next_request = None
-    response.history = []
-    response._content = b""  # httpx intentionally exposes no public content scrubber
-    response.headers.clear()
-    for value in extension_values:
-        _scrub_reachable_value(value, seen)
-    response.extensions.clear()
-    response.stream = httpx.ByteStream(b"")
-    if next_request is not None:
-        _scrub_request(next_request, _seen=seen)
-    for historical_response in history:
-        _scrub_response(historical_response, _seen=seen)
+    """Erase and detach reachable request/response state within fixed bounds."""
     try:
-        request = response.request
-    except RuntimeError:
-        return
-    _scrub_request(request, _seen=seen)
+        _bounded_scrub_graph(response, _seen)
+    except BaseException:
+        pass
 
 
 def _json_object(response: httpx.Response) -> dict[str, Any]:
@@ -596,6 +542,26 @@ async def _send_protocol_request(
         if not _trusted_origin(request.url, request.method):
             raise RuntimeError("OAuth request target is not trusted")
         response = await isolated._send_single_request(request)  # type: ignore[attr-defined]
+        # MockTransport is reachable only through the private module factory seam used by
+        # tests. It eagerly materializes ``content=`` responses, unlike the owned
+        # AsyncHTTPTransport production path; restore a raw stream so the same reader is
+        # exercised without permitting a public client/transport injection API.
+        if type(transport) is httpx.MockTransport and response.is_stream_consumed:
+            status_code = response.status_code
+            headers = httpx.Headers(response.headers)
+            extensions = dict(response.extensions)
+            test_content = response.content
+            try:
+                await response.aclose()
+            finally:
+                _scrub_response(response)
+            response = httpx.Response(
+                status_code,
+                headers=headers,
+                stream=httpx.ByteStream(test_content),
+                request=request,
+                extensions=extensions,
+            )
     except BaseException:
         try:
             await isolated.aclose()
@@ -628,12 +594,17 @@ async def _request(method: str, url: str, **kwargs: Any) -> httpx.Response:
             content=kwargs.get("content"),
             headers=kwargs.get("headers"),
         )
+        outgoing_request.headers["Accept-Encoding"] = "identity"
         async with asyncio.timeout(get_agent_settings().siwc_oauth_timeout_seconds):
             source_response, protocol_client = await _send_protocol_request(outgoing_request)
             _reject_redirect(source_response)
             _ensure_declared_response_size(source_response)
-            async for chunk in source_response.aiter_bytes():
-                if len(content) + len(chunk) > MAX_HTTP_RESPONSE_BYTES:
+            _ensure_identity_response(source_response)
+            async for chunk in source_response.aiter_raw():
+                if (
+                    len(chunk) > MAX_HTTP_RESPONSE_BYTES
+                    or len(content) + len(chunk) > MAX_HTTP_RESPONSE_BYTES
+                ):
                     raise _safe_error(
                         OAuthFailureCode.MALFORMED_RESPONSE,
                         "OAuth provider response exceeded the size limit",
@@ -648,34 +619,28 @@ async def _request(method: str, url: str, **kwargs: Any) -> httpx.Response:
             )
     except SoftTimeLimitExceeded as exc:
         soft_failure = exc
-        internal_traceback = exc.__traceback__
+        internal_traceback = _base_exception_get(exc, "__traceback__")
         _discard_exception_secrets(exc)
     except OAuthLifecycleError as exc:
-        oauth_failure = (exc.code, str(exc), exc.definitive, exc.retryable)
-        internal_traceback = exc.__traceback__
+        oauth_failure = (exc.code, _oauth_error_message(exc), exc.definitive, exc.retryable)
+        internal_traceback = _base_exception_get(exc, "__traceback__")
         _discard_exception_secrets(exc)
     except (httpx.HTTPError, TimeoutError) as exc:
-        request = getattr(exc, "request", None)
-        response = getattr(exc, "response", None)
-        if isinstance(request, httpx.Request):
-            _scrub_request(request)
-        if isinstance(response, httpx.Response):
-            _scrub_response(response)
         oauth_failure = (
             OAuthFailureCode.TRANSIENT,
             "OAuth provider is temporarily unreachable",
             False,
             True,
         )
-        internal_traceback = exc.__traceback__
+        internal_traceback = _base_exception_get(exc, "__traceback__")
         _discard_exception_secrets(exc)
     except asyncio.CancelledError as exc:
         unexpected_kind = "cancelled"
-        internal_traceback = exc.__traceback__
+        internal_traceback = _base_exception_get(exc, "__traceback__")
         _discard_exception_secrets(exc)
     except BaseException as exc:  # noqa: BLE001 - this is the public secret boundary
         unexpected_kind = "runtime"
-        internal_traceback = exc.__traceback__
+        internal_traceback = _base_exception_get(exc, "__traceback__")
         _discard_exception_secrets(exc)
     finally:
         kwargs.clear()
@@ -710,7 +675,7 @@ async def _request(method: str, url: str, **kwargs: Any) -> httpx.Response:
                 _scrub_request(request_to_scrub)
             requests_to_scrub.clear()
             if internal_traceback is not None:
-                traceback_module.clear_frames(internal_traceback)
+                _bounded_clear_traceback(internal_traceback)
         except BaseException as exc:
             cleanup_failure = cleanup_failure or exc
     internal_traceback = None
@@ -818,7 +783,7 @@ def validate_id_token(
     _bounded_input(issued_client_id, field="client identifier", maximum=512)
     try:
         _strict_jose_segment(encoded, 0)
-        _strict_jose_segment(encoded, 1)
+        strict_claims = _strict_jose_segment(encoded, 1)
     except (ValueError, binascii.Error, UnicodeDecodeError, json.JSONDecodeError):
         raise _safe_error(OAuthFailureCode.CORRUPT_TOKEN, "ID token encoding is invalid") from None
     selected_jwks = _selected_verification_jwks(encoded, jwks=jwks, token_name="ID")
@@ -842,18 +807,30 @@ def validate_id_token(
         )
     except (JWTError, ValueError, TypeError):
         raise _safe_error(OAuthFailureCode.CORRUPT_TOKEN, "ID token validation failed") from None
+    if claims != strict_claims:
+        raise _safe_error(OAuthFailureCode.CORRUPT_TOKEN, "ID token claims are ambiguous")
+    claims = strict_claims
     subject = claims.get("sub")
     if not isinstance(subject, str) or not subject or len(subject) > 255:
         raise _safe_error(OAuthFailureCode.CORRUPT_TOKEN, "ID token subject is invalid")
     if expected_subject is not None and subject != expected_subject:
         raise _safe_error(OAuthFailureCode.CORRUPT_TOKEN, "ID token identity changed")
     _validate_signed_times(claims, now=now or datetime.now(timezone.utc), token_name="ID")
-    if nonce is not None and claims.get("nonce") != nonce:
+    claim_nonce = claims.get("nonce")
+    if nonce is not None and (type(claim_nonce) is not str or claim_nonce != nonce):
         raise _safe_error(OAuthFailureCode.CORRUPT_TOKEN, "ID token nonce validation failed")
     audience = claims.get("aud")
     authorized_party = claims.get("azp")
-    if (authorized_party is not None and authorized_party != issued_client_id) or (
-        isinstance(audience, list) and len(audience) > 1 and authorized_party != issued_client_id
+    _validate_audience(audience, issued_client_id, token_name="ID")
+    if (
+        authorized_party is not None
+        and (
+            type(authorized_party) is not str
+            or len(authorized_party) > 255
+            or authorized_party != issued_client_id
+        )
+    ) or (
+        type(audience) is list and len(audience) > 1 and authorized_party != issued_client_id
     ):
         raise _safe_error(
             OAuthFailureCode.CORRUPT_TOKEN, "ID token authorized party validation failed"
@@ -895,6 +872,30 @@ def _validate_signed_times(claims: dict[str, Any], *, now: datetime, token_name:
     ):
         raise _safe_error(OAuthFailureCode.CORRUPT_TOKEN, f"{token_name} token times are invalid")
     return expires
+
+
+def _validate_audience(value: Any, expected: str, *, token_name: str) -> None:
+    if type(value) is str:
+        audiences = [value]
+    elif type(value) is list:
+        audiences = value
+    else:
+        raise _safe_error(
+            OAuthFailureCode.CORRUPT_TOKEN, f"{token_name} token audience is invalid"
+        )
+    if (
+        not audiences
+        or len(audiences) > 16
+        or any(
+            type(audience) is not str or not audience or len(audience) > 512
+            for audience in audiences
+        )
+        or expected not in audiences
+        or len(set(audiences)) != len(audiences)
+    ):
+        raise _safe_error(
+            OAuthFailureCode.CORRUPT_TOKEN, f"{token_name} token audience is invalid"
+        )
 
 
 def _selected_verification_jwks(
@@ -953,7 +954,7 @@ def _validate_access_token(
         if not _BASE64URL_SEGMENT.fullmatch(header_segment):
             return None
         header_bytes = base64.urlsafe_b64decode(header_segment + "=" * (-len(header_segment) % 4))
-        recognizable_header = _strict_json_bytes(header_bytes)
+        recognizable_header = json.loads(header_bytes)
     except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):
         return None
     if not isinstance(recognizable_header, dict):
@@ -998,6 +999,10 @@ def _validate_access_token(
         raise _safe_error(
             OAuthFailureCode.CORRUPT_TOKEN, "Access token validation failed"
         ) from None
+    if claims != unverified_claims:
+        raise _safe_error(OAuthFailureCode.CORRUPT_TOKEN, "Access token claims are ambiguous")
+    claims = unverified_claims
+    _validate_audience(claims.get("aud"), RESOURCE, token_name="Access")
     if claims.get("sub") != identity_claims.get("sub"):
         raise _safe_error(
             OAuthFailureCode.CORRUPT_TOKEN,
@@ -1092,6 +1097,19 @@ def _validated_jwks(jwks: Any) -> dict[str, Any]:
     keys = jwks.get("keys")
     if not isinstance(keys, list) or not keys or len(keys) > MAX_JWKS_KEYS:
         raise _safe_error(OAuthFailureCode.MALFORMED_RESPONSE, "OAuth JWKS payload is malformed")
+    presented_kids: set[str] = set()
+    for key in keys:
+        if not isinstance(key, dict) or not key or len(key) > 32:
+            raise _safe_error(OAuthFailureCode.MALFORMED_RESPONSE, "OAuth JWKS payload is malformed")
+        kid = key.get("kid")
+        if (
+            not isinstance(kid, str)
+            or not kid
+            or len(kid) > 512
+            or kid in presented_kids
+        ):
+            raise _safe_error(OAuthFailureCode.MALFORMED_RESPONSE, "OAuth JWKS payload is malformed")
+        presented_kids.add(kid)
     usable = [dict(key) for key in keys if _usable_rsa_verification_jwk(key)]
     if not usable:
         raise _safe_error(OAuthFailureCode.MALFORMED_RESPONSE, "OAuth JWKS payload is malformed")
@@ -1128,7 +1146,11 @@ def _usable_rsa_verification_jwk(key: Any) -> bool:
             decoded = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
         except (binascii.Error, ValueError):
             return False
-        if not decoded:
+        if (
+            not decoded
+            or base64.urlsafe_b64encode(decoded).rstrip(b"=").decode("ascii") != encoded
+            or (len(decoded) > 1 and decoded[0] == 0)
+        ):
             return False
         numbers[field] = int.from_bytes(decoded, "big")
     modulus = numbers["n"]
@@ -1150,6 +1172,20 @@ def _validated_response_impl(
     nonce: str | None = None,
     expected_subject: str | None = None,
 ) -> ValidatedTokenBundle:
+    allowed = {
+        "access_token", "refresh_token", "id_token", "token_type", "expires_in",
+        "scope", "earliest_refresh_at", "refresh_token_expires_at",
+    }
+    try:
+        _validate_json_graph(payload)
+    except ValueError:
+        raise _safe_error(
+            OAuthFailureCode.MALFORMED_RESPONSE, "OAuth token response is malformed"
+        ) from None
+    if type(payload) is not dict or set(payload) - allowed:
+        raise _safe_error(
+            OAuthFailureCode.MALFORMED_RESPONSE, "OAuth token response is malformed"
+        )
     access_token = _required_string(payload, "access_token")
     refresh_token = _required_string(payload, "refresh_token")
     id_token = _required_string(payload, "id_token")
@@ -1234,7 +1270,7 @@ def _validated_response(
             expected_subject=expected_subject,
         )
     except OAuthLifecycleError as exc:
-        failure_meta = (exc.code, str(exc), exc.definitive, exc.retryable)
+        failure_meta = (exc.code, _oauth_error_message(exc), exc.definitive, exc.retryable)
     finally:
         payload.clear()
     if failure_meta is not None:
@@ -1247,6 +1283,57 @@ def _validated_response(
     if result is None:
         raise RuntimeError("OAuth token validation failed safely")
     return result
+
+
+@safe_oauth_boundary
+async def validate_transferred_token_response(
+    *,
+    token_response: dict[str, Any],
+    issued_client_id: str,
+    nonce: str,
+    receipt_clock: Callable[[], datetime] | None = None,
+) -> ValidatedTokenBundle:
+    """Independently validate a helper-transferred token response."""
+    allowed = {
+        "access_token", "refresh_token", "id_token", "token_type", "expires_in",
+        "scope", "earliest_refresh_at", "refresh_token_expires_at",
+    }
+    if type(token_response) is not dict or set(token_response) - allowed:
+        token_response.clear()
+        raise _safe_error(
+            OAuthFailureCode.MALFORMED_RESPONSE, "OAuth token response is malformed",
+            definitive=True,
+        )
+    if (
+        not isinstance(issued_client_id, str)
+        or not issued_client_id
+        or issued_client_id == "dynamic_agent_client"
+        or len(issued_client_id) > 255
+        or not issued_client_id.isascii()
+        or any(ord(character) <= 32 or ord(character) == 127 for character in issued_client_id)
+    ):
+        token_response.clear()
+        raise _safe_error(
+            OAuthFailureCode.CORRUPT_TOKEN, "OAuth issued client identifier is invalid",
+            definitive=True,
+        )
+    _bounded_input(nonce, field="nonce", maximum=256)
+    jwks = await _fetch_jwks()
+    received_at = _utc_datetime((receipt_clock or (lambda: datetime.now(timezone.utc)))())
+    validated = _validated_response(
+        token_response,
+        jwks=jwks,
+        issued_client_id=issued_client_id,
+        nonce=nonce,
+        now=received_at,
+    )
+    if not REQUIRED_SCOPES.issubset(validated.scopes):
+        raise _safe_error(
+            OAuthFailureCode.SCOPE_LOSS,
+            "Required OAuth scopes were not granted",
+            definitive=True,
+        )
+    return validated
 
 
 @safe_oauth_boundary

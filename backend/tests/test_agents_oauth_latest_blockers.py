@@ -108,7 +108,7 @@ def test_ca_bundle_validation_rejects_symlink_and_unreadable_file(tmp_path: Path
         target.chmod(0o600)
 
 
-@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity", "1e9999"])
 def test_all_strict_json_paths_reject_nonfinite_constants(constant: str):
     with pytest.raises(ValueError):
         openai_oauth._strict_json_bytes(f'{{"unknown":{constant}}}'.encode())
@@ -1071,3 +1071,48 @@ async def test_request_soft_limit_wins_when_owned_transport_close_also_fails(mon
     with pytest.raises(SoftTimeLimitExceeded) as exc_info:
         await openai_oauth._request("GET", openai_oauth.JWKS_ENDPOINT)
     assert exc_info.value is limit
+
+
+@pytest.mark.asyncio
+async def test_oauth_transport_requests_identity_and_consumes_raw_stream(monkeypatch):
+    observed = {}
+
+    class RawStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"{}"
+
+    class Transport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            observed["accept_encoding"] = request.headers.get("accept-encoding")
+            return httpx.Response(200, stream=RawStream(), request=request)
+
+    monkeypatch.setattr(openai_oauth, "_new_oauth_transport", Transport)
+    response = await openai_oauth._request("GET", openai_oauth.JWKS_ENDPOINT)
+    assert observed == {"accept_encoding": "identity"}
+    assert response.content == b"{}"
+
+
+@pytest.mark.asyncio
+async def test_oauth_transport_rejects_content_encoding_before_raw_body(monkeypatch):
+    consumed = 0
+
+    class UnreadStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            nonlocal consumed
+            consumed += 1
+            yield b"compressed"
+
+    class Transport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            return httpx.Response(
+                200,
+                headers={"Content-Encoding": "gzip"},
+                stream=UnreadStream(),
+                request=request,
+            )
+
+    monkeypatch.setattr(openai_oauth, "_new_oauth_transport", Transport)
+    with pytest.raises(OAuthLifecycleError) as caught:
+        await openai_oauth._request("GET", openai_oauth.JWKS_ENDPOINT)
+    assert caught.value.code is OAuthFailureCode.MALFORMED_RESPONSE
+    assert consumed == 0
