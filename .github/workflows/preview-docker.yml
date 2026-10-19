@@ -101,7 +101,9 @@ jobs:
             org.opencontainers.image.revision=${{ github.event.pull_request.head.sha }}
             org.opencontainers.image.version=${{ steps.preview.outputs.tag }}
           cache-from: type=gha,scope=preview-${{ matrix.image }}
-          cache-to: type=gha,mode=max,scope=preview-${{ matrix.image }}
+          # Cache exhaustion must not turn a successfully built/pushed preview
+          # into a failed publication. The cache is only an optimization.
+          cache-to: type=gha,mode=max,scope=preview-${{ matrix.image }},ignore-error=true
           provenance: mode=max
           sbom: true
 
