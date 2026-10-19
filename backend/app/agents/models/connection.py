@@ -1,13 +1,16 @@
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, JSON, String
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
 from app.core.database import Base
+
+if TYPE_CHECKING:
+    from app.agents.models.oauth_credential import OpenAIOAuthCredential
 
 
 class LlmConnection(Base):
@@ -24,7 +27,7 @@ class LlmConnection(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True)
 
     name: Mapped[str] = mapped_column(String(120))
-    # kind ∈ {"ollama","openai","anthropic","openai_compatible"}
+    # kind ∈ {"ollama","openai","anthropic","openai_compatible","openai_chatgpt"}
     kind: Mapped[str] = mapped_column(String(40))
 
     # Endpoint base URL. Optional for openai/anthropic (they have defaults).
@@ -44,3 +47,10 @@ class LlmConnection(Base):
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    oauth_credential: Mapped[Optional["OpenAIOAuthCredential"]] = relationship(
+        back_populates="connection",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+        uselist=False,
+    )

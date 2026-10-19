@@ -29,6 +29,73 @@ async def test_create_connection_requires_base_url_for_openai_compatible(session
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kind,base_url",
+    [
+        ("ollama", "http://ollama:11434"),
+        ("openai", None),
+        ("anthropic", None),
+        ("openai_compatible", "http://local-model:1234/v1"),
+    ],
+)
+async def test_existing_connection_kinds_keep_accepting_original_config(
+    session, test_user, kind, base_url
+):
+    conn = await cs.create_connection(
+        session,
+        test_user.id,
+        name=f"Existing {kind}",
+        kind=kind,
+        base_url=base_url,
+        api_key="existing-kind-key",
+    )
+
+    assert conn.kind == kind
+    assert conn.base_url == base_url
+    assert conn.api_key_encrypted is not None
+
+
+@pytest.mark.asyncio
+async def test_openai_chatgpt_create_rejects_nonempty_extra_without_leaking_values(
+    session, test_user
+):
+    secret = "nested-create-secret"
+
+    with pytest.raises(ValueError) as exc_info:
+        await cs.create_connection(
+            session,
+            test_user.id,
+            name="ChatGPT",
+            kind="openai_chatgpt",
+            extra={"oauth": {"refresh_token": secret}},
+        )
+
+    assert str(exc_info.value) == "openai_chatgpt does not accept extra"
+    assert secret not in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_openai_chatgpt_update_rejects_nonempty_extra_without_leaking_values(
+    session, test_user
+):
+    conn = await cs.create_connection(
+        session, test_user.id, name="ChatGPT", kind="openai_chatgpt"
+    )
+    secret = "nested-update-secret"
+
+    with pytest.raises(ValueError) as exc_info:
+        await cs.update_connection(
+            session,
+            conn.id,
+            test_user.id,
+            extra={"oauth": {"access_token": secret}},
+        )
+
+    assert str(exc_info.value) == "openai_chatgpt does not accept extra"
+    assert secret not in str(exc_info.value)
+
+
+@pytest.mark.asyncio
 async def test_create_and_get_and_list(session, test_user):
     conn = await cs.create_connection(
         session, test_user.id,

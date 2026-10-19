@@ -15,7 +15,7 @@ from app.agents.providers.registry import build_provider, list_providers
 from app.agents.services.crypto import decrypt, encrypt
 
 
-VALID_KINDS = set(list_providers())  # ollama, openai, anthropic, openai_compatible
+VALID_KINDS = set(list_providers()) | {"openai_chatgpt"}
 
 
 async def list_connections(session: AsyncSession, user_id: uuid.UUID) -> list[LlmConnection]:
@@ -54,6 +54,13 @@ async def create_connection(
         raise ValueError(f"unknown kind '{kind}', expected one of {sorted(VALID_KINDS)}")
     if kind == "openai_compatible" and not base_url:
         raise ValueError("openai_compatible requires base_url")
+    if kind == "openai_chatgpt":
+        if api_key is not None:
+            raise ValueError("openai_chatgpt does not accept api_key")
+        if base_url is not None:
+            raise ValueError("openai_chatgpt does not accept base_url")
+        if extra:
+            raise ValueError("openai_chatgpt does not accept extra")
 
     if is_default:
         await _clear_default(session, user_id)
@@ -89,6 +96,13 @@ async def update_connection(
     conn = await get_connection(session, conn_id, user_id)
     if conn is None:
         return None
+    if conn.kind == "openai_chatgpt":
+        if api_key is not None:
+            raise ValueError("openai_chatgpt does not accept api_key")
+        if base_url is not None:
+            raise ValueError("openai_chatgpt does not accept base_url")
+        if extra:
+            raise ValueError("openai_chatgpt does not accept extra")
     if name is not None:
         conn.name = name.strip()
     if base_url is not None:
