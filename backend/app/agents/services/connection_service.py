@@ -7,12 +7,16 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlparse
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.models.connection import LlmConnection
 from app.agents.providers.registry import build_provider, list_providers
 from app.agents.services.crypto import decrypt, encrypt
+from app.agents.services.openai_oauth import (
+    OAuthFailureCode,
+    OAuthLifecycleError,
+)
 
 
 VALID_KINDS = set(list_providers()) | {"openai_chatgpt"}
@@ -124,9 +128,37 @@ async def update_connection(
 
 
 async def delete_connection(session: AsyncSession, conn_id: uuid.UUID, user_id: uuid.UUID) -> bool:
-    conn = await get_connection(session, conn_id, user_id)
+    from app.agents.services.connection_lock import lock_owned_connection
+    from app.agents.models.oauth_credential import OpenAIOAuthCredential
+
+    conn = await lock_owned_connection(session, conn_id, user_id)
     if conn is None:
         return False
+    credential_row = (
+        await session.execute(
+            select(
+                OpenAIOAuthCredential,
+                and_(
+                    OpenAIOAuthCredential.lifecycle_lease_token.is_not(None),
+                    OpenAIOAuthCredential.lifecycle_lease_expires_at.is_not(None),
+                    OpenAIOAuthCredential.lifecycle_lease_expires_at > func.now(),
+                ).label("lease_is_live"),
+            )
+            .where(OpenAIOAuthCredential.connection_id == conn_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).one_or_none()
+    credential = credential_row[0] if credential_row is not None else None
+    lease_is_live = bool(credential_row[1]) if credential_row is not None else False
+    if credential is not None and (
+        credential.token_bundle_encrypted is not None
+        or credential.refresh_attempt_id is not None
+        or credential.last_error_code
+        in {"refresh_outcome_unknown", "revocation_pending"}
+        or lease_is_live
+    ):
+        raise ValueError("revoke the ChatGPT credential before deleting this connection")
     await session.delete(conn)
     await session.commit()
     return True
@@ -141,6 +173,14 @@ async def _clear_default(session: AsyncSession, user_id: uuid.UUID, *, except_id
 
 def build_provider_for_connection(conn: LlmConnection):
     """Materialize a runtime LLMProvider instance for this connection."""
+    if conn.kind == "openai_chatgpt":
+        # Layer 3 supplies the Responses provider. Until then, never reinterpret
+        # an OAuth connection as API-key OpenAI (which changes account/billing).
+        raise OAuthLifecycleError(
+            OAuthFailureCode.INACTIVE,
+            "ChatGPT OAuth provider is not available",
+            definitive=True,
+        )
     return build_provider(
         conn.kind,
         api_key=decrypt(conn.api_key_encrypted) or "",
@@ -197,7 +237,12 @@ def _unreachable(url: str, exc: Exception) -> dict[str, Any]:
     return {"ok": False, "detail": f"unreachable{where}: {reason}{_routing_hint(url)}"}
 
 
-async def test_connection(conn: LlmConnection) -> dict[str, Any]:
+async def test_connection(
+    conn: LlmConnection,
+    *,
+    session: AsyncSession | None = None,
+    now=None,
+) -> dict[str, Any]:
     """Live probe. For Ollama we list models; for OpenAI/Anthropic we do
     a tiny embedding or a 1-token chat. Returns {ok, detail, models?}."""
     import httpx
@@ -208,6 +253,147 @@ async def test_connection(conn: LlmConnection) -> dict[str, Any]:
     attempted = conn.base_url or ""
 
     try:
+        if conn.kind == "openai_chatgpt":
+            from app.agents.services.oauth_credentials import (
+                decrypt_bundle,
+                get_owned_credential,
+            )
+            from app.agents.services.oauth_refresh import (
+                disable_plan_usage,
+                refresh_credential,
+                require_reauthorization,
+            )
+            from app.agents.services.openai_oauth import list_models
+
+            if session is None:
+                raise OAuthLifecycleError(
+                    OAuthFailureCode.INACTIVE,
+                    "OAuth connection test requires credential storage",
+                    definitive=True,
+                )
+            connection_id = conn.id
+            connection_user_id = conn.user_id
+
+            async def access_snapshot(
+                *, force: bool = False, rejected_version: int | None = None
+            ) -> tuple[str, int]:
+                await refresh_credential(
+                    session,
+                    connection_id,
+                    connection_user_id,
+                    now=now,
+                    force=force,
+                    rejected_version=rejected_version,
+                )
+                credential = await get_owned_credential(
+                    session, connection_id, connection_user_id
+                )
+                if credential is not None:
+                    await session.refresh(credential)
+                if credential is not None and (
+                    credential.status != "active"
+                    or credential.refresh_attempt_id is not None
+                    or credential.last_error_code
+                    in {"refresh_outcome_unknown", "revocation_pending"}
+                ):
+                    status = credential.status
+                    error_code = credential.last_error_code
+                    await session.rollback()
+                    if error_code == "refresh_outcome_unknown":
+                        raise OAuthLifecycleError(
+                            OAuthFailureCode.REFRESH_OUTCOME_UNKNOWN,
+                            "OAuth refresh outcome is unknown; explicit reauthorization is required",
+                            definitive=True,
+                        )
+                    if error_code == "revocation_pending":
+                        raise OAuthLifecycleError(
+                            OAuthFailureCode.RACE_LOST,
+                            "OAuth revocation is in progress",
+                            retryable=True,
+                        )
+                    if status == "disabled":
+                        raise OAuthLifecycleError(
+                            OAuthFailureCode.SCOPE_LOSS,
+                            "ChatGPT plan usage is disabled",
+                            definitive=True,
+                        )
+                    if status == "revoked":
+                        raise OAuthLifecycleError(
+                            OAuthFailureCode.REVOKED,
+                            "OAuth credential is not active",
+                            definitive=True,
+                        )
+                    raise OAuthLifecycleError(
+                        OAuthFailureCode.REAUTH_REQUIRED,
+                        "OAuth credential is not active",
+                        definitive=True,
+                    )
+                if credential is None or credential.token_bundle_encrypted is None:
+                    await session.rollback()
+                    raise OAuthLifecycleError(
+                        OAuthFailureCode.RACE_LOST,
+                        "OAuth credential changed during provider use",
+                        retryable=True,
+                    )
+                try:
+                    access_token = decrypt_bundle(
+                        credential.token_bundle_encrypted
+                    ).access_token
+                except ValueError:
+                    await session.rollback()
+                    raise OAuthLifecycleError(
+                        OAuthFailureCode.CORRUPT_TOKEN,
+                        "OAuth credential cannot be decrypted",
+                        definitive=True,
+                    ) from None
+                observed_version = credential.credential_version
+                await session.commit()
+                return access_token, observed_version
+
+            access_token, observed_version = await access_snapshot()
+            try:
+                models = await list_models(access_token)
+            except OAuthLifecycleError as exc:
+                if exc.code is OAuthFailureCode.SCOPE_LOSS:
+                    await disable_plan_usage(
+                        session,
+                        connection_id,
+                        connection_user_id,
+                        expected_version=observed_version,
+                    )
+                    raise
+                if exc.code is not OAuthFailureCode.REAUTH_REQUIRED:
+                    raise
+                # Provider-side invalidation can precede our local expiry.
+                # Force exactly one rotation/retry; never fall back to an API key.
+                access_token, observed_version = await access_snapshot(
+                    force=True, rejected_version=observed_version
+                )
+                try:
+                    models = await list_models(access_token)
+                except OAuthLifecycleError as retry_exc:
+                    if retry_exc.code is OAuthFailureCode.SCOPE_LOSS:
+                        await disable_plan_usage(
+                            session,
+                            connection_id,
+                            connection_user_id,
+                            expected_version=observed_version,
+                        )
+                    elif retry_exc.code is OAuthFailureCode.REAUTH_REQUIRED:
+                        await require_reauthorization(
+                            session,
+                            connection_id,
+                            connection_user_id,
+                            expected_version=observed_version,
+                            last_error_code=retry_exc.code.value,
+                        )
+                    raise
+            return {
+                "ok": True,
+                "detail": f"reachable ({len(models)} models)",
+                "models": models,
+            }
+
         if conn.kind == "ollama":
             url = (conn.base_url or "http://ollama:11434").rstrip("/") + "/api/tags"
             attempted = url
@@ -262,6 +448,8 @@ async def test_connection(conn: LlmConnection) -> dict[str, Any]:
 
         return {"ok": False, "detail": f"unknown kind: {conn.kind}"}
 
+    except OAuthLifecycleError as exc:
+        return {"ok": False, "detail": str(exc), "auth_state": exc.code.value}
     except httpx.HTTPError as exc:
         return _unreachable(attempted, exc)
     except Exception as exc:  # noqa: BLE001

@@ -110,7 +110,43 @@ O token response inclui access token, refresh token, ID token, tipo, `expires_in
 
 O refresh usa o client ID emitido, nunca `dynamic_agent_client`, e deve ser serializado por sessão para impedir reutilização concorrente de um token rotativo.[7]
 
+Como o refresh token é rotativo, o backend persiste **antes de qualquer I/O** um
+intento durável: `status=reauth_required`, `last_error_code=refresh_outcome_unknown`, UUID e
+horário da tentativa, mais um lease curto. O bundle cifrado e a identidade validada
+permanecem preservados, mas o token antigo nunca volta a ser elegível para refresh
+automático, mesmo depois de timeout, cancelamento, soft time limit, falha arbitrária
+ou crash do processo. Somente uma resposta terminal comprovada pode scrubbar o
+bundle; uma resposta bem-sucedida finaliza a rotação por CAS de versão, tentativa,
+lease e validade do lease. Lease expirado não autoriza takeover do token marcado:
+exige reautorização explícita. Inferência e o job periódico excluem esse estado;
+revogação continua permitida; exclusão exige estado `revoked`, bundle removido e ausência de lease.
+
 A revogação é um POST form-urlencoded ao `revocation_endpoint`, enviando o refresh token, `token_type_hint=refresh_token` e o client ID emitido. Depois da revogação, os tokens locais devem ser removidos; falha de rede deve ser reportada sem reter credenciais indefinidamente como se o logout tivesse sido confirmado.[7]
+
+Contrato atual de validação e concorrência:
+
+- JWT de access assinado exige `client_id` não vazio (até 255 caracteres), igual
+  ao client ID emitido; `scope` até 8192 caracteres, 64 grants de até 256 caracteres,
+  iguais aos grants do token response; `nbf` finito e válido; `jti` não vazio até
+  512 caracteres. O objeto `https://api.openai.com/auth` exige `per_user_salt` e
+  `encrypted_auth_metadata`, ambos não vazios, até 8192 caracteres. Tokens opacos
+  continuam vinculados pelo ID token, `at_hash` e grants do token response.
+- O timeout máximo aceito é 300 segundos por request. Refresh pode executar dois
+  requests (JWKS e token): lease de 720 segundos (600 + margem de 120), compartilhado
+  por refresh e revogação. Refresh exige validade restante superior a 660 segundos
+  (600 + skew de 60) antes do dispatch. Todo finalizador exige token exato, tentativa
+  correspondente e lease válido no relógio do banco (`clock_timestamp()` no PG).
+- JWKS fornecido ou recebido valida recursivamente todo o grafo JSON: profundidade
+  até 16, 4096 nós, 128 membros por objeto, chaves até 512 caracteres, strings até
+  65536 caracteres e tamanho total até 1000000. NaN/Infinity são rejeitados inclusive
+  em campos ignorados. O bundle cifrado rejeita membros duplicados e não finitos.
+- Create e delete bloqueiam a linha pai do proprietário com `FOR UPDATE`; SQLite
+  usa um write antes da leitura, pois ignora `FOR UPDATE`. Delete verifica novamente
+  o credential e lifecycle sob o lock e responde conflito para credential não revogado.
+- `AGENTS_ENABLED=false` omite o agendamento OAuth na inicialização e faz o task
+  retornar sem abrir banco ou rede. Migração 098 transforma `expired` e `error`
+  legados em `reauth_required`, remove seus bundles e só então restringe o check.
+  Downgrade remove rows sem bundle antes de restaurar a coluna não nula.
 
 ### 2.5 Inference
 
@@ -121,7 +157,7 @@ GET https://api.openai.com/v1/models
 Authorization: Bearer <ACCESS_TOKEN>
 ```
 
-A resposta SIWC documentada usa `models[]`; a UI deve manter itens com `visibility == "list"`, mostrar `display_name` e enviar `slug` como model.[8]
+A API oficial responde com um array `models`; preserve a ordem do servidor, mantenha apenas entradas com `visibility: "list"`, mostre `display_name` na UI e envie o `slug` selecionado como `model`.[8]
 
 Inference:
 
@@ -205,13 +241,17 @@ subject                     varchar(255)
 issued_client_id            varchar(255)
 account_email               varchar(320) nullable
 scopes                      jsonb
-status                      varchar(32)   # active, disabled, expired, revoked, error
+status                      varchar(32)   # active, disabled, revoked, reauth_required
 token_bundle_encrypted      text          # access + refresh + id token, atomicamente
 access_token_expires_at     timestamptz
 refresh_token_expires_at    timestamptz nullable
 credential_version          integer
 last_refreshed_at           timestamptz nullable
 last_error_code             varchar(120) nullable
+refresh_attempt_id          varchar(36) nullable
+refresh_attempt_started_at  timestamptz nullable
+refresh_restore_status      varchar(32) nullable
+lifecycle_lease_*           token/kind/expiry nullable
 created_at / updated_at     timestamptz
 ```
 
@@ -300,7 +340,7 @@ Ele deve:
 
 A configuração de embeddings do Securo já é instance-wide e separada das conexões de chat, então SIWC não deve ser reutilizado para RAG embeddings.
 
-`connection_service.test_connection()` precisa de um branch dedicado: refresh se necessário, `GET /v1/models`, parse de `models[]`, filtro por `visibility`, e erros específicos de entitlement/usage.
+`connection_service.test_connection()` precisa de um branch dedicado: refresh se necessário, `GET /v1/models`, parse do array oficial `models[]`, preservando a ordem do servidor e mantendo apenas `visibility: "list"` com `slug`/`display_name`, além de erros específicos de entitlement/usage.
 
 ### 4.6 API backend
 

@@ -1,7 +1,14 @@
 from functools import lru_cache
+import os
 from pathlib import Path
+import stat
+from urllib.parse import urlsplit
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+MAX_OAUTH_TIMEOUT_SECONDS = 300
 
 
 class AgentSettings(BaseSettings):
@@ -59,6 +66,78 @@ class AgentSettings(BaseSettings):
     embedding_ollama_base_url: str = "http://ollama:11434"
     embedding_openai_base_url: str = "https://api.openai.com/v1"
     embedding_openai_api_key: str = ""
+
+    # Sign in with ChatGPT OAuth egress is isolated from ambient proxy/CA
+    # environment variables. Deployments must opt in here instead.
+    siwc_oauth_proxy_url: str = ""
+    siwc_oauth_ca_bundle: str = ""
+    siwc_oauth_timeout_seconds: float = 30.0
+    siwc_oauth_connect_timeout_seconds: float = 5.0
+
+    @field_validator("siwc_oauth_proxy_url")
+    @classmethod
+    def validate_siwc_oauth_proxy_url(cls, value: str) -> str:
+        if not value:
+            return value
+        if value != value.strip() or any(
+            ord(character) < 32 or ord(character) == 127 for character in value
+        ):
+            raise ValueError("SIWC OAuth proxy URL contains whitespace or control characters")
+        try:
+            parsed = urlsplit(value)
+            port = parsed.port
+        except ValueError as exc:
+            raise ValueError("SIWC OAuth proxy URL is invalid") from exc
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or "@" in parsed.netloc
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in {"", "/"}
+            or port == 0
+        ):
+            raise ValueError("SIWC OAuth proxy URL must be an HTTP(S) origin without credentials")
+        return value
+
+    @field_validator("siwc_oauth_ca_bundle")
+    @classmethod
+    def validate_siwc_oauth_ca_bundle(cls, value: str) -> str:
+        if not value:
+            return value
+        if value != value.strip() or any(
+            character.isspace() or ord(character) < 32 or ord(character) == 127
+            for character in value
+        ):
+            raise ValueError("SIWC OAuth CA bundle path contains whitespace or control characters")
+        path = Path(value)
+        if not path.is_absolute():
+            raise ValueError("SIWC OAuth CA bundle path must be absolute")
+        try:
+            details = path.lstat()
+        except (OSError, ValueError) as exc:
+            raise ValueError("SIWC OAuth CA bundle is not readable") from exc
+        if stat.S_ISLNK(details.st_mode) or not stat.S_ISREG(details.st_mode):
+            raise ValueError("SIWC OAuth CA bundle must be a regular non-symlink file")
+        if details.st_mode & 0o444 == 0 or not os.access(path, os.R_OK):
+            raise ValueError("SIWC OAuth CA bundle is not readable")
+        try:
+            with path.open("rb") as bundle:
+                prefix = bundle.read(64)
+        except OSError as exc:
+            raise ValueError("SIWC OAuth CA bundle is not readable") from exc
+        if b"-----BEGIN CERTIFICATE-----" not in prefix:
+            raise ValueError("SIWC OAuth CA bundle is not PEM encoded")
+        return value
+
+    @field_validator("siwc_oauth_timeout_seconds", "siwc_oauth_connect_timeout_seconds")
+    @classmethod
+    def validate_siwc_oauth_timeout(cls, value: float) -> float:
+        if not 0 < value <= MAX_OAUTH_TIMEOUT_SECONDS:
+            raise ValueError("SIWC OAuth timeout must be between 0 and 300 seconds")
+        return value
 
     # Where uploaded knowledge files live on disk (per-instance).
     knowledge_storage_path: str = "/app/data/agent_knowledge"

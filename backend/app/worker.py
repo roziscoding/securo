@@ -1,6 +1,7 @@
 from celery import Celery
 
 from app.core.config import get_settings
+from app.agents.config import get_agent_settings
 
 settings = get_settings()
 
@@ -60,7 +61,14 @@ celery_app.conf.beat_schedule = {
         # stamped with the 1:1 fallback (or left NULL) once real rates land.
         "schedule": 60 * 60 * 12,
     },
+
 }
+
+if get_agent_settings().enabled:
+    celery_app.conf.beat_schedule["refresh-agent-oauth-near-expiry"] = {
+        "task": "app.agents.tasks.oauth_refresh.refresh_near_expiry",
+        "schedule": 5 * 60,
+    }
 
 celery_app.conf.include = [
     "app.tasks.sync_tasks",
@@ -71,4 +79,5 @@ celery_app.conf.include = [
     # Optional agents module — registering the import is harmless when
     # AGENTS_ENABLED=false (the task just won't be dispatched).
     "app.agents.tasks.ingest",
+    "app.agents.tasks.oauth_refresh",
 ]

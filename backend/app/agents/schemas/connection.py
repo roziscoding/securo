@@ -49,10 +49,26 @@ class ConnectionRead(BaseModel):
             "not_connected",
             "active",
             "disabled",
-            "expired",
             "revoked",
-            "error",
             "reauth_required",
+        ]
+    ] = None
+    credential_error_code: Optional[
+        Literal[
+            "transient",
+            "revoked",
+            "scope_loss",
+            "corrupt_token",
+            "reauth_required",
+            "too_early",
+            "race_lost",
+            "redirect_rejected",
+            "malformed_response",
+            "inactive",
+            "invalid_client",
+            "expired",
+            "refresh_outcome_unknown",
+            "revocation_pending",
         ]
     ] = None
     account_email: Optional[str] = None
@@ -85,20 +101,43 @@ class ConnectionRead(BaseModel):
             has_api_key=has_api_key,
             auth_method=auth_method,
             credential_status=credential_status,
+            credential_error_code=(credential.last_error_code if credential else None),
             account_email=credential.account_email if credential else None,
             scopes=list(credential.scopes or []) if credential else [],
             access_token_expires_at=(
                 credential.access_token_expires_at if credential else None
             ),
             needs_reauthorization=(
-                credential_status in {"expired", "revoked", "error", "reauth_required"}
+                credential_status in {"revoked", "reauth_required"}
             ),
             created_at=row.created_at,
             updated_at=row.updated_at,
         )
 
 
+class OAuthModelRead(BaseModel):
+    slug: str = Field(..., min_length=1, max_length=256)
+    display_name: str = Field(..., min_length=1, max_length=256)
+
+
 class ConnectionTestResult(BaseModel):
     ok: bool
-    detail: str
-    models: Optional[list[str]] = None
+    detail: str = Field(..., max_length=512)
+    models: Optional[list[str | OAuthModelRead]] = Field(None, max_length=500)
+    auth_state: Optional[
+        Literal[
+            "transient",
+            "revoked",
+            "scope_loss",
+            "corrupt_token",
+            "reauth_required",
+            "too_early",
+            "race_lost",
+            "redirect_rejected",
+            "malformed_response",
+            "inactive",
+            "invalid_client",
+            "refresh_outcome_unknown",
+            "revocation_pending",
+        ]
+    ] = None

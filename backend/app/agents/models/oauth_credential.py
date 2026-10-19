@@ -20,7 +20,7 @@ class OpenAIOAuthCredential(Base):
     __tablename__ = "agent_openai_oauth_credentials"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('active', 'disabled', 'expired', 'revoked', 'error', "
+            "status IN ('active', 'disabled', 'revoked', "
             "'reauth_required')",
             name="ck_agent_oauth_credential_status",
         ),
@@ -46,7 +46,9 @@ class OpenAIOAuthCredential(Base):
         JSON().with_variant(JSONB(), "postgresql"), default=list
     )
     status: Mapped[str] = mapped_column(String(32), default="active", server_default="active")
-    token_bundle_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    # NULL is the safe terminal representation after revocation or definitive
+    # invalidation. Metadata remains so callers can explain recovery.
+    token_bundle_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     access_token_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     earliest_refresh_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -61,6 +63,26 @@ class OpenAIOAuthCredential(Base):
         DateTime(timezone=True), nullable=True
     )
     last_error_code: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    refresh_attempt_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    refresh_retry_after: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # A committed attempt marker means the rotating refresh token may have
+    # been consumed. It is retained until explicit reauthorization/revocation.
+    refresh_attempt_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    refresh_attempt_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    refresh_restore_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Short, committed leases serialize refresh/revoke across processes without
+    # retaining a database transaction or pool connection during provider I/O.
+    lifecycle_lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    lifecycle_lease_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    lifecycle_lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

@@ -9,7 +9,12 @@ from unittest.mock import patch
 import pytest
 
 from app.agents.services import connection_service
-from app.agents.services.oauth_credentials import CredentialBundle, create_credential
+from app.agents.services.oauth_credentials import (
+    CredentialBundle,
+    begin_refresh_attempt,
+    create_credential,
+    scrub_credential_bundle,
+)
 
 
 @pytest.mark.asyncio
@@ -191,6 +196,7 @@ async def test_chatgpt_connection_read_exposes_safe_typed_auth_status_only(
     body = response.json()
     assert body["auth_method"] == "chatgpt_oauth"
     assert body["credential_status"] == "active"
+    assert body["credential_error_code"] is None
     assert body["account_email"] == "owner@example.com"
     assert body["scopes"] == ["openid", "chatgpt.tokens.use.direct"]
     assert body["needs_reauthorization"] is False
@@ -207,6 +213,240 @@ async def test_chatgpt_connection_read_exposes_safe_typed_auth_status_only(
         "subject",
     ):
         assert forbidden not in serialized
+
+
+@pytest.mark.asyncio
+async def test_chatgpt_unknown_refresh_outcome_is_serialized_as_safe_reauth_state(
+    client, auth_headers, session, test_user
+):
+    connection = await connection_service.create_connection(
+        session, test_user.id, name="ChatGPT unknown", kind="openai_chatgpt"
+    )
+    credential = await create_credential(
+        session,
+        connection.id,
+        test_user.id,
+        bundle=CredentialBundle("access-secret", "refresh-secret", "id-secret"),
+        issuer="https://auth.openai.com",
+        subject="subject-secret",
+        issued_client_id="client-secret",
+        account_email="owner@example.com",
+        scopes=["openid"],
+        access_token_expires_at=datetime.now(timezone.utc),
+    )
+    credential.status = "reauth_required"
+    credential.last_error_code = "refresh_outcome_unknown"
+    credential.refresh_attempt_id = str(uuid.uuid4())
+    await session.commit()
+
+    response = await client.get(
+        f"/api/agents/connections/{connection.id}", headers=auth_headers
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["credential_status"] == "reauth_required"
+    assert body["credential_error_code"] == "refresh_outcome_unknown"
+    assert body["needs_reauthorization"] is True
+    assert "refresh-secret" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_chatgpt_revoke_endpoint_scrubs_locally_and_surfaces_remote_failure(
+    client, auth_headers, session, test_user
+):
+    connection = await connection_service.create_connection(
+        session, test_user.id, name="ChatGPT", kind="openai_chatgpt"
+    )
+    now = datetime.now(timezone.utc)
+    await create_credential(
+        session, connection.id, test_user.id,
+        bundle=CredentialBundle("access", "refresh", "id"), issuer="https://auth.openai.com",
+        subject="subject", issued_client_id="oaiapp_test", account_email=None,
+        scopes=["openid"], access_token_expires_at=now + timedelta(hours=1)
+    )
+    from app.agents.services.openai_oauth import OAuthFailureCode, OAuthLifecycleError
+    async def fail(*args, **kwargs):
+        raise OAuthLifecycleError(OAuthFailureCode.TRANSIENT, "revocation unavailable", retryable=True)
+    connection_id = connection.id
+    user_id = test_user.id
+    with patch("app.agents.services.oauth_refresh.revoke_token", side_effect=fail):
+        response = await client.post(
+            f"/api/agents/connections/{connection_id}/revoke", headers=auth_headers
+        )
+    assert response.status_code == 503
+    repeated = await client.post(
+        f"/api/agents/connections/{connection_id}/revoke", headers=auth_headers
+    )
+    assert repeated.status_code == 503
+    assert repeated.json()["detail"] == "Previous OAuth revocation was not remotely confirmed"
+    session.expire_all()
+    current = await connection_service.get_connection(session, connection_id, user_id)
+    assert current is not None
+    credential = current.oauth_credential
+    assert credential is not None
+    assert credential.token_bundle_encrypted is None
+    assert credential.last_error_code == "transient"
+
+
+@pytest.mark.asyncio
+async def test_chatgpt_generic_delete_requires_explicit_revocation(
+    client, auth_headers, session, test_user
+):
+    connection = await connection_service.create_connection(
+        session, test_user.id, name="ChatGPT", kind="openai_chatgpt"
+    )
+    now = datetime.now(timezone.utc)
+    await create_credential(
+        session, connection.id, test_user.id,
+        bundle=CredentialBundle("access", "refresh", "id"), issuer="https://auth.openai.com",
+        subject="subject", issued_client_id="oaiapp_test", account_email=None,
+        scopes=["openid"], access_token_expires_at=now + timedelta(hours=1)
+    )
+    response = await client.delete(
+        f"/api/agents/connections/{connection.id}", headers=auth_headers
+    )
+    assert response.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_scrubbed_terminal_chatgpt_credential_deletes_without_remote_revoke(
+    client, auth_headers, session, test_user
+):
+    connection = await connection_service.create_connection(
+        session, test_user.id, name="Expired ChatGPT", kind="openai_chatgpt"
+    )
+    connection_id = connection.id
+    user_id = test_user.id
+    now = datetime.now(timezone.utc)
+    await create_credential(
+        session,
+        connection_id,
+        user_id,
+        bundle=CredentialBundle("access", "refresh", "id"),
+        issuer="https://auth.openai.com",
+        subject="subject",
+        issued_client_id="oaiapp_test",
+        account_email=None,
+        scopes=["openid"],
+        access_token_expires_at=now,
+    )
+    await scrub_credential_bundle(
+        session,
+        connection_id,
+        user_id,
+        expected_version=1,
+        status="reauth_required",
+        last_error_code="expired",
+    )
+
+    deleted = await client.delete(
+        f"/api/agents/connections/{connection_id}", headers=auth_headers
+    )
+    assert deleted.status_code == 204
+    repeated = await client.delete(
+        f"/api/agents/connections/{connection_id}", headers=auth_headers
+    )
+    assert repeated.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_pending_chatgpt_credential_cannot_use_scrubbed_delete_path(
+    client, auth_headers, session, test_user
+):
+    connection = await connection_service.create_connection(
+        session, test_user.id, name="Pending ChatGPT", kind="openai_chatgpt"
+    )
+    now = datetime.now(timezone.utc)
+    await create_credential(
+        session,
+        connection.id,
+        test_user.id,
+        bundle=CredentialBundle("access", "refresh", "id"),
+        issuer="https://auth.openai.com",
+        subject="subject",
+        issued_client_id="oaiapp_test",
+        account_email=None,
+        scopes=["openid"],
+        access_token_expires_at=now,
+    )
+    assert await begin_refresh_attempt(
+        session,
+        connection.id,
+        test_user.id,
+        expected_version=1,
+        attempt_id=str(uuid.uuid4()),
+        lease_duration=timedelta(minutes=5),
+    )
+
+    deleted = await client.delete(
+        f"/api/agents/connections/{connection.id}", headers=auth_headers
+    )
+    assert deleted.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_disabled_chatgpt_credential_can_be_revoked_then_deleted(
+    client, auth_headers, session, test_user
+):
+    """Scope loss retains identity, but disconnect still revokes and scrubs it."""
+    connection = await connection_service.create_connection(
+        session, test_user.id, name="ChatGPT", kind="openai_chatgpt"
+    )
+    now = datetime.now(timezone.utc)
+    await create_credential(
+        session,
+        connection.id,
+        test_user.id,
+        bundle=CredentialBundle("access", "refresh", "id"),
+        issuer="https://auth.openai.com",
+        subject="subject",
+        issued_client_id="oaiapp_test",
+        account_email=None,
+        scopes=["openid", "chatgpt.tokens.use.direct"],
+        access_token_expires_at=now + timedelta(hours=1),
+    )
+    connection_id = connection.id
+    user_id = test_user.id
+
+    from app.agents.services.openai_oauth import OAuthFailureCode, OAuthLifecycleError
+
+    async def scope_lost(*args, **kwargs):
+        raise OAuthLifecycleError(
+            OAuthFailureCode.SCOPE_LOSS, "scope lost", definitive=True
+        )
+
+    with patch("app.agents.services.openai_oauth.list_models", side_effect=scope_lost):
+        tested = await client.post(
+            f"/api/agents/connections/{connection_id}/test", headers=auth_headers
+        )
+    assert tested.status_code == 200
+    assert tested.json()["auth_state"] == "scope_loss"
+
+    remote_calls = 0
+
+    async def cancelled_revoke(*args, **kwargs):
+        nonlocal remote_calls
+        remote_calls += 1
+        raise OAuthLifecycleError(
+            OAuthFailureCode.TRANSIENT, "revocation unavailable", retryable=True
+        )
+
+    with patch("app.agents.services.oauth_refresh.revoke_token", side_effect=cancelled_revoke):
+        revoked = await client.post(
+            f"/api/agents/connections/{connection_id}/revoke", headers=auth_headers
+        )
+    assert revoked.status_code == 503
+    assert remote_calls == 1
+
+    session.expire_all()
+    current = await connection_service.get_connection(session, connection_id, user_id)
+    assert current is not None and current.oauth_credential is not None
+    assert current.oauth_credential.status == "revoked"
+    assert current.oauth_credential.token_bundle_encrypted is None
+    deleted = await client.delete(
+        f"/api/agents/connections/{connection_id}", headers=auth_headers
+    )
+    assert deleted.status_code == 204
 
 
 @pytest.mark.asyncio
@@ -294,6 +534,37 @@ async def test_test_connection_uses_service_probe(client, auth_headers, test_use
     assert body["ok"] is True
     assert body["detail"] == "fake reachable"
     assert body["models"] == ["llama3"]
+
+
+@pytest.mark.asyncio
+async def test_test_connection_serializes_invalid_client_auth_state(
+    client, auth_headers, test_user
+):
+    created = await client.post(
+        "/api/agents/connections",
+        json={"name": "ChatGPT", "kind": "openai_chatgpt"},
+        headers=auth_headers,
+    )
+    assert created.status_code == 201
+
+    async def fake_probe(conn, **kwargs):
+        return {
+            "ok": False,
+            "detail": "OAuth token refresh rejected the client",
+            "auth_state": "invalid_client",
+        }
+
+    with patch(
+        "app.agents.api.connections.connection_service.test_connection",
+        side_effect=fake_probe,
+    ):
+        response = await client.post(
+            f"/api/agents/connections/{created.json()['id']}/test",
+            headers=auth_headers,
+        )
+
+    assert response.status_code == 200
+    assert response.json()["auth_state"] == "invalid_client"
 
 
 @pytest.mark.asyncio
