@@ -176,7 +176,7 @@ jobs:
         if: steps.helper-changes.outputs.run_helper != 'false'
         run: python -m pip install ".[dev]"
 
-      - name: Lint, type check, and run 48 tests
+      - name: Lint, type check, and run helper tests
         if: steps.helper-changes.outputs.run_helper != 'false'
         run: |
           ruff check .

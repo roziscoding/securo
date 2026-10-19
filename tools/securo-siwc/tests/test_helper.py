@@ -160,6 +160,28 @@ def test_wrong_state_does_not_poison_listener():
         listener.close()
 
 
+def test_callback_accepts_openai_granted_scope_parameter():
+    outcomes: queue.Queue[CallbackResult | CallbackFailure] = queue.Queue(maxsize=1)
+    listener = LoopbackListener(outcomes)
+    listener.start()
+    listener.arm("expected", None)
+    try:
+        callback = f"http://127.0.0.1:{listener.port}/auth/callback?" + urlencode(
+            {
+                "code": "authorization-code",
+                "scope": "chatgpt.tokens.use.direct email offline_access openid profile resource.invoke",
+                "state": "expected",
+                "client_id": "oaiapp-securo",
+            }
+        )
+        assert urlopen(callback, timeout=2).status == 200
+        assert outcomes.get(timeout=1) == CallbackResult(
+            "authorization-code", "oaiapp-securo"
+        )
+    finally:
+        listener.close()
+
+
 def test_concurrent_local_attackers_cannot_poison_listener_arming():
     outcomes: queue.Queue[CallbackResult | CallbackFailure] = queue.Queue(maxsize=1)
     listener = LoopbackListener(outcomes)
