@@ -44,7 +44,7 @@ export default function AgentDetailPage() {
   })
   const { data: connections } = useQuery({
     queryKey: ['agent-connections'],
-    queryFn: () => agents.connections.list(),
+    queryFn: ({ signal }) => agents.connections.list(signal),
   })
   const linkedConnection = agent?.connection_id
     ? connections?.find((c) => c.id === agent.connection_id)

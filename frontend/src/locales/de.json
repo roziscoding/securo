@@ -2638,6 +2638,94 @@
       "empty": {
         "title": "Noch keine Verbindungen",
         "subtitle": "Füge eine Verbindung hinzu, um Securo auf dein lokales Ollama, OpenAI, Anthropic oder einen OpenAI-kompatiblen Endpunkt zu verweisen."
+      },
+      "createContinue": "Erstellen und fortfahren",
+      "deleteFailed": "Verbindung konnte nicht entfernt werden",
+      "chatgpt": {
+        "provider": "ChatGPT",
+        "title": "Mit ChatGPT anmelden",
+        "description": "Führen Sie den lokalen Helfer aus, um Ihr ChatGPT-Abonnement sicher zu verbinden. Token passieren diesen Browser nie.",
+        "httpsRequired": "Diese Securo-Seite muss https verwenden, bevor der HELPER-Befehl angezeigt werden kann.",
+        "instructions": "Führen Sie den Befehl auf dem Computer aus, auf dem Sie sich anmelden werden. Wenn Sie dazu aufgefordert werden, fügen Sie das Einmalgeheimnis separat ein.",
+        "command": "Helferbefehl",
+        "secret": "Einmaliges Geheimnis",
+        "secretWarning": "Behandeln Sie dies wie ein Passwort. Es wird nur für diese Kopplung angezeigt und wird nie automatisch kopiert. Wenn Sie es kopieren, bleibt es in der Zwischenablage, bis Sie es ersetzen.",
+        "copyCommand": "Helferbefehl kopieren",
+        "copySecret": "Einmaliges Geheimnis kopieren",
+        "copied": "{{label}} kopiert",
+        "copyFailed": "Konnte nicht kopiert werden. Wählen Sie den Wert aus und kopieren Sie ihn manuell.",
+        "chooseModel": "Wählen Sie ein ChatGPT-Modell",
+        "signIn": "Anmelden",
+        "signInAgain": "Erneut anmelden",
+        "reconnect": "Erneut verbinden",
+        "disconnect": "Trennen",
+        "disconnected": "ChatGPT getrennt; Verbindungseinstellungen wurden beibehalten.",
+        "revokeUnresolved": "Das Ergebnis der Anbieter-Sitzung wird nicht bestätigt. Es wurden keine weiteren Maßnahmen ergriffen.",
+        "testSuccess": "ChatGPT-Verbindung funktioniert.",
+        "testFailed": "ChatGPT-Verbindungstest fehlgeschlagen.",
+        "noAccount": "Keine Konto-E-Mail verfügbar",
+        "expires": "Der Zugriff wird automatisch aktualisiert; der aktuelle Zugriff läuft am {{date}} ab.",
+        "status": {
+          "idle": "Bereit",
+          "starting": "Eine sichere Kopplung wird erstellt...",
+          "pending": "Warten auf den Helfer...",
+          "attempt_registered": "Anmeldung im Helfer gestartet…",
+          "completing": "Verbindung wird validiert...",
+          "completed": "Verbunden mit ChatGPT.",
+          "failed": "Kopplung fehlgeschlagen.",
+          "cancelled": "Die Kopplung wurde abgebrochen.",
+          "expired": "Die Kopplung ist abgelaufen. Starten Sie erneut.",
+          "network": "Securo ist vorübergehend nicht erreichbar. Erneuter Versuch...",
+          "reconciling": "Abbruch wird bestätigt…"
+        },
+        "credential": {
+          "not_connected": "Nicht verbunden",
+          "active": "Verbunden",
+          "disabled": "Deaktiviert",
+          "revoked": "Getrennt",
+          "reauth_required": "Anmeldung erforderlich"
+        },
+        "errors": {
+          "transient": "Ein temporärer Anbieterfehler ist aufgetreten. Der Wiederholungsversuch erfolgt automatisch.",
+          "revoked": "Die ChatGPT-Sitzung wurde widerrufen. Melden Sie sich erneut an.",
+          "scope_loss": "Der erforderliche Kontozugriff fehlt. Melden Sie sich erneut an.",
+          "corrupt_token": "Gespeicherte Anmeldeinformationen sind ungültig. Melden Sie sich erneut an.",
+          "reauth_required": "Melden Sie sich erneut an, um fortzufahren.",
+          "too_early": "Bitte warten Sie, bevor Sie es erneut versuchen.",
+          "race_lost": "Eine weitere Aktualisierung wurde zuerst abgeschlossen. Aktualisieren und erneut versuchen.",
+          "redirect_rejected": "Der lokale Rückruf wurde abgelehnt. Pairing neu starten.",
+          "malformed_response": "Der Anbieter hat eine ungültige Antwort zurückgegeben. Pairing neu starten.",
+          "inactive": "Diese Sitzung ist inaktiv. Melden Sie sich erneut an.",
+          "invalid_client": "Die Helferregistrierung ist ungültig. Starten Sie die Kopplung neu.",
+          "expired": "Die Kopplung ist abgelaufen. Starten Sie erneut.",
+          "refresh_outcome_unknown": "Die Aktualisierung der Anmeldeinformationen hat ein unbekanntes Ergebnis. Warten Sie, bevor Sie es erneut versuchen.",
+          "revocation_pending": "Der Sitzungswiderruf ist noch ausstehend.",
+          "resource_cleanup_pending": "Die sichere Bereinigung steht noch aus.",
+          "credential_busy": "Die Wartung der Anmeldeinformationen ist im Gange. Versuchen Sie es in Kürze erneut.",
+          "start_outcome_unknown": "Das Koppeln der Erstellung hat ein unbekanntes Ergebnis. Vor dem erneuten Versuch aktualisieren.",
+          "unknown": "Ein sicherer Kontobetrieb hat ein unbekanntes Ergebnis. Vor dem erneuten Versuch aktualisieren.",
+          "invalid": "Die Antwort des Anbieters konnte nicht akzeptiert werden. Pairing neu starten.",
+          "reauth": "Melden Sie sich erneut an, um fortzufahren.",
+          "busy": "Die Wartung der Anmeldeinformationen ist im Gange. Versuchen Sie es in Kürze erneut."
+        },
+        "confirm": {
+          "reconnect": {
+            "title": "ChatGPT erneut verbinden?",
+            "description": "Dadurch wird die aktuelle Anbieter-Sitzung widerrufen, bevor eine neue sichere Kopplung für „{{name}}“ gestartet wird.",
+            "action": "Widerrufen und erneut verbinden"
+          },
+          "disconnect": {
+            "title": "ChatGPT trennen?",
+            "description": "Dies widerruft die Anbieter-Sitzung, behält aber \"{{name}}\" und seine Einstellungen bei.",
+            "action": "Trennen"
+          },
+          "delete": {
+            "title": "Verbindung löschen?",
+            "description": "Für eine aktive ChatGPT-Verbindung widerruft Securo die Providersitzung, bevor „{{name}}“ gelöscht wird. Dies kann nicht rückgängig gemacht werden.",
+            "action": "Löschen"
+          }
+        },
+        "reconcileFailed": "Der Abbruch konnte nicht bestätigt werden. Prüfe die Verbindung und versuche es erneut."
       }
     }
   },

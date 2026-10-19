@@ -2603,6 +2603,94 @@
       "empty": {
         "title": "Aún no hay conexiones",
         "subtitle": "Añade una conexión para apuntar Securo a tu Ollama local, OpenAI, Anthropic o cualquier endpoint compatible con OpenAI."
+      },
+      "createContinue": "Crear y continuar",
+      "deleteFailed": "No se ha podido eliminar la conexión",
+      "chatgpt": {
+        "provider": "ChatGPT",
+        "title": "Iniciar sesión con ChatGPT",
+        "description": "Ejecuta la herramienta auxiliar local para conectar de forma segura tu suscripción a ChatGPT. Los tokens nunca pasan por este navegador.",
+        "httpsRequired": "Esta página de Securo debe usar HTTPS para poder mostrar el comando de la herramienta auxiliar.",
+        "instructions": "Ejecuta el comando en el ordenador donde vayas a iniciar sesión. Cuando se te solicite, pega por separado el secreto de un solo uso.",
+        "command": "Comando de la herramienta auxiliar",
+        "secret": "Secreto de un solo uso",
+        "secretWarning": "Trátalo como una contraseña. Solo se muestra para este emparejamiento y nunca se copia automáticamente. Si lo copias, permanecerá en el portapapeles hasta que lo sustituyas.",
+        "copyCommand": "Copiar comando de la herramienta auxiliar",
+        "copySecret": "Copiar secreto de un solo uso",
+        "copied": "Se ha copiado {{label}}",
+        "copyFailed": "No se ha podido copiar. Selecciona el valor y cópialo manualmente.",
+        "chooseModel": "Elegir un modelo de ChatGPT",
+        "signIn": "Iniciar sesión",
+        "signInAgain": "Volver a iniciar sesión",
+        "reconnect": "Volver a conectar",
+        "disconnect": "Desconectar",
+        "disconnected": "ChatGPT desconectado; se mantuvieron los ajustes de conexión.",
+        "revokeUnresolved": "El resultado de la sesión del proveedor no está confirmado. No se ha tomado ninguna otra medida.",
+        "testSuccess": "La conexión a ChatGPT funciona.",
+        "testFailed": "La prueba de conexión a ChatGPT ha fallado.",
+        "noAccount": "No hay ninguna dirección de correo disponible para la cuenta",
+        "expires": "El acceso se renueva automáticamente; el acceso actual caduca el {{date}}.",
+        "status": {
+          "idle": "Listo",
+          "starting": "Creando un emparejamiento seguro…",
+          "pending": "Esperando a la herramienta auxiliar…",
+          "attempt_registered": "Inicio de sesión iniciado en la herramienta auxiliar…",
+          "completing": "Validando la conexión…",
+          "completed": "Conectado a ChatGPT.",
+          "failed": "El emparejamiento ha fallado.",
+          "cancelled": "Se ha cancelado el emparejamiento.",
+          "expired": "El emparejamiento ha caducado. Empieza de nuevo.",
+          "network": "No se puede acceder temporalmente a Securo. Reintentando…",
+          "reconciling": "Confirmando cancelación…"
+        },
+        "credential": {
+          "not_connected": "Sin conexión",
+          "active": "Conectado",
+          "disabled": "Desactivado",
+          "revoked": "Desconectado",
+          "reauth_required": "Se requiere iniciar sesión"
+        },
+        "errors": {
+          "transient": "Se ha producido un error temporal del proveedor. El reintento es automático.",
+          "revoked": "Se ha revocado la sesión de ChatGPT. Vuelve a iniciar sesión.",
+          "scope_loss": "Falta el acceso requerido a la cuenta. Vuelve a iniciar sesión.",
+          "corrupt_token": "Las credenciales guardadas no son válidas. Vuelve a iniciar sesión.",
+          "reauth_required": "Vuelve a iniciar sesión para continuar.",
+          "too_early": "Espera antes de volver a intentarlo.",
+          "race_lost": "Otra actualización ha terminado primero. Actualiza la página y vuelve a intentarlo.",
+          "redirect_rejected": "Se ha rechazado la devolución de llamada local. Reinicia el emparejamiento.",
+          "malformed_response": "El proveedor ha devuelto una respuesta no válida. Reinicia el emparejamiento.",
+          "inactive": "Esta sesión está inactiva. Vuelve a iniciar sesión.",
+          "invalid_client": "El registro de la herramienta auxiliar no es válido. Reinicia el emparejamiento.",
+          "expired": "El emparejamiento ha caducado. Empieza de nuevo.",
+          "refresh_outcome_unknown": "No se conoce el resultado de la renovación de las credenciales. Espera antes de volver a intentarlo.",
+          "revocation_pending": "La revocación de la sesión sigue pendiente.",
+          "resource_cleanup_pending": "La limpieza segura sigue pendiente.",
+          "credential_busy": "Hay una operación de mantenimiento de las credenciales en curso. Vuelve a intentarlo en unos instantes.",
+          "start_outcome_unknown": "No se conoce el resultado de la creación del emparejamiento. Actualiza la página antes de volver a intentarlo.",
+          "unknown": "No se conoce el resultado de una operación segura de la cuenta. Actualiza la página antes de volver a intentarlo.",
+          "invalid": "No se ha podido aceptar la respuesta del proveedor. Reinicia el emparejamiento.",
+          "reauth": "Vuelve a iniciar sesión para continuar.",
+          "busy": "Hay una operación de mantenimiento de las credenciales en curso. Vuelve a intentarlo en unos instantes."
+        },
+        "confirm": {
+          "reconnect": {
+            "title": "¿Volver a conectar ChatGPT?",
+            "description": "Esto revoca la sesión actual del proveedor antes de iniciar un nuevo emparejamiento seguro para «{{name}}».",
+            "action": "Revocar y volver a conectar"
+          },
+          "disconnect": {
+            "title": "¿Desconectar ChatGPT?",
+            "description": "Esto revoca la sesión del proveedor, pero conserva «{{name}}» y sus ajustes.",
+            "action": "Desconectar"
+          },
+          "delete": {
+            "title": "¿Eliminar la conexión?",
+            "description": "Si la conexión a ChatGPT está activa, Securo revoca la sesión del proveedor antes de eliminar «{{name}}». Esta acción no se puede deshacer.",
+            "action": "Eliminar"
+          }
+        },
+        "reconcileFailed": "No se pudo confirmar la cancelación. Comprueba la conexión e inténtalo de nuevo."
       }
     },
     "newConversation": "Nueva conversación",

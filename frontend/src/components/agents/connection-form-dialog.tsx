@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -16,11 +17,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch'
 import { agents } from '@/lib/api'
 import type { LlmConnection, LlmConnectionKind } from '@/lib/api'
+import { cancelAgentConnectionsList, upsertAgentConnection } from '@/lib/agent-connections-cache'
 
 interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
   connection?: LlmConnection | null
+  onSaved?: (connection: LlmConnection) => void
 }
 
 const KIND_LABELS: Record<LlmConnectionKind, { label: string; needsBaseUrl: boolean; needsKey: boolean; modelHint: string; urlHint: string; defaultModel?: string }> = {
@@ -32,9 +35,10 @@ const KIND_LABELS: Record<LlmConnectionKind, { label: string; needsBaseUrl: bool
   openai: { label: 'OpenAI', needsBaseUrl: false, needsKey: true, modelHint: 'gpt-4o-mini', urlHint: '', defaultModel: 'gpt-4o-mini' },
   anthropic: { label: 'Anthropic', needsBaseUrl: false, needsKey: true, modelHint: 'claude-haiku-4-5', urlHint: '', defaultModel: 'claude-haiku-4-5' },
   openai_compatible: { label: 'OpenAI-compatible (LM Studio, vLLM, Groq, Together, …)', needsBaseUrl: true, needsKey: false, modelHint: 'llama3.1-70b', urlHint: 'http://192.168.1.142:1234' },
+  openai_chatgpt: { label: 'Sign in with ChatGPT', needsBaseUrl: false, needsKey: false, modelHint: 'Select after signing in', urlHint: '' },
 }
 
-export function ConnectionFormDialog({ open, onOpenChange, connection }: Props) {
+export function ConnectionFormDialog({ open, onOpenChange, connection, onSaved }: Props) {
   const { t } = useTranslation()
   const qc = useQueryClient()
   const isEdit = !!connection
@@ -50,6 +54,7 @@ export function ConnectionFormDialog({ open, onOpenChange, connection }: Props) 
   // model (where one exists). Once they type, we never overwrite.
   const [modelTouched, setModelTouched] = useState(false)
   const [isDefault, setIsDefault] = useState(false)
+  const savingRef = useRef(false)
 
   /** Switch the connector kind and, when the user is in the create
    *  flow and hasn't customized the model field, auto-fill the new
@@ -94,6 +99,17 @@ export function ConnectionFormDialog({ open, onOpenChange, connection }: Props) 
 
   const saveMut = useMutation({
     mutationFn: async () => {
+      await cancelAgentConnectionsList(qc)
+      if (kind === 'openai_chatgpt') {
+        if (isEdit && connection) {
+          return agents.connections.update(connection.id, {
+            name: name.trim(),
+            default_model: defaultModel.trim() || null,
+            is_default: isDefault,
+          })
+        }
+        return agents.connections.create({ name: name.trim(), kind, is_default: isDefault })
+      }
       const payload: Parameters<typeof agents.connections.create>[0] = {
         name: name.trim(),
         kind,
@@ -109,18 +125,22 @@ export function ConnectionFormDialog({ open, onOpenChange, connection }: Props) 
       if (isEdit && connection) return agents.connections.update(connection.id, payload)
       return agents.connections.create(payload)
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['agent-connections'] })
+    onSuccess: async (saved) => {
+      await upsertAgentConnection(qc, saved)
       onOpenChange(false)
       toast.success(isEdit ? t('agents.connections.updated') : t('agents.connections.created'))
+      onSaved?.(saved)
     },
-    onError: (err: unknown) => {
-      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-      toast.error(detail || t('agents.connections.saveFailed'))
+    onError: () => {
+      toast.error(t('agents.connections.saveFailed'))
+    },
+    onSettled: () => {
+      savingRef.current = false
     },
   })
 
   const submit = () => {
+    if (savingRef.current) return
     if (!name.trim()) {
       toast.error(t('agents.connections.nameRequired'))
       return
@@ -129,24 +149,26 @@ export function ConnectionFormDialog({ open, onOpenChange, connection }: Props) 
       toast.error(t('agents.connections.baseUrlRequired'))
       return
     }
+    savingRef.current = true
     saveMut.mutate()
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-xl">
+    <Dialog open={open} onOpenChange={(next) => { if (!savingRef.current) onOpenChange(next) }}>
+      <DialogContent className="max-w-xl" showCloseButton={!saveMut.isPending}>
         <DialogHeader>
           <DialogTitle>{isEdit ? t('agents.connections.editTitle') : t('agents.connections.createTitle')}</DialogTitle>
+          <DialogDescription className="sr-only">{t('agents.connections.subtitle')}</DialogDescription>
         </DialogHeader>
         <div className="grid gap-4 py-2">
           <div className="grid gap-2">
-            <Label>{t('agents.connections.name')}</Label>
-            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={t('agents.connections.namePlaceholder')} />
+            <Label htmlFor="connection-name">{t('agents.connections.name')}</Label>
+            <Input id="connection-name" disabled={saveMut.isPending} value={name} onChange={(e) => setName(e.target.value)} placeholder={t('agents.connections.namePlaceholder')} />
           </div>
           <div className="grid gap-2">
-            <Label>{t('agents.connections.kind')}</Label>
-            <Select value={kind} onValueChange={(v) => handleKindChange(v as LlmConnectionKind)} disabled={isEdit}>
-              <SelectTrigger>
+            <Label id="connection-kind-label">{t('agents.connections.kind')}</Label>
+            <Select value={kind} onValueChange={(v) => handleKindChange(v as LlmConnectionKind)} disabled={isEdit || saveMut.isPending}>
+              <SelectTrigger aria-labelledby="connection-kind-label">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -158,12 +180,14 @@ export function ConnectionFormDialog({ open, onOpenChange, connection }: Props) 
               </SelectContent>
             </Select>
           </div>
-          <div className="grid gap-2">
-            <Label>
+          {kind !== 'openai_chatgpt' && <div className="grid gap-2">
+            <Label htmlFor="connection-base-url">
               {t('agents.connections.baseUrl')}
               {!meta.needsBaseUrl && <span className="text-xs text-muted-foreground ml-1">({t('agents.connections.optional')})</span>}
             </Label>
             <Input
+              id="connection-base-url"
+              disabled={saveMut.isPending}
               value={baseUrl}
               onChange={(e) => setBaseUrl(e.target.value)}
               placeholder={meta.urlHint || t('agents.connections.baseUrlPlaceholder')}
@@ -178,13 +202,15 @@ export function ConnectionFormDialog({ open, onOpenChange, connection }: Props) 
                 {t('agents.connections.openaiCompatHint')}
               </p>
             )}
-          </div>
-          <div className="grid gap-2">
-            <Label>
+          </div>}
+          {kind !== 'openai_chatgpt' && <div className="grid gap-2">
+            <Label htmlFor="connection-api-key">
               {t('agents.connections.apiKey')}
               {!meta.needsKey && <span className="text-xs text-muted-foreground ml-1">({t('agents.connections.optional')})</span>}
             </Label>
             <Input
+              id="connection-api-key"
+              disabled={saveMut.isPending}
               type="password"
               value={apiKey}
               onChange={(e) => {
@@ -194,10 +220,12 @@ export function ConnectionFormDialog({ open, onOpenChange, connection }: Props) 
               placeholder={isEdit && connection?.has_api_key ? t('agents.connections.apiKeyPlaceholderEdit') : t('agents.connections.apiKeyPlaceholder')}
             />
             <p className="text-xs text-muted-foreground">{t('agents.connections.apiKeyHint')}</p>
-          </div>
-          <div className="grid gap-2">
-            <Label>{t('agents.connections.defaultModel')}</Label>
+          </div>}
+          {(kind !== 'openai_chatgpt' || isEdit) && <div className="grid gap-2">
+            <Label htmlFor="connection-model">{t('agents.connections.defaultModel')}</Label>
             <Input
+              id="connection-model"
+              disabled={saveMut.isPending}
               value={defaultModel}
               onChange={(e) => {
                 setDefaultModel(e.target.value)
@@ -205,20 +233,20 @@ export function ConnectionFormDialog({ open, onOpenChange, connection }: Props) 
               }}
               placeholder={meta.modelHint}
             />
-          </div>
+          </div>}
           <div className="flex items-center gap-2">
-            <Switch checked={isDefault} onCheckedChange={(v) => setIsDefault(!!v)} />
-            <Label className="cursor-pointer" onClick={() => setIsDefault(!isDefault)}>
+            <Switch id="connection-default" disabled={saveMut.isPending} checked={isDefault} onCheckedChange={(v) => setIsDefault(!!v)} />
+            <Label htmlFor="connection-default" className="cursor-pointer">
               {t('agents.connections.setAsDefault')}
             </Label>
           </div>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" disabled={saveMut.isPending} onClick={() => onOpenChange(false)}>
             {t('agents.connections.cancel')}
           </Button>
           <Button onClick={submit} disabled={saveMut.isPending}>
-            {saveMut.isPending ? t('agents.connections.saving') : isEdit ? t('agents.connections.save') : t('agents.connections.create')}
+            {saveMut.isPending ? t('agents.connections.saving') : isEdit ? t('agents.connections.save') : kind === 'openai_chatgpt' ? t('agents.connections.createContinue') : t('agents.connections.create')}
           </Button>
         </DialogFooter>
       </DialogContent>

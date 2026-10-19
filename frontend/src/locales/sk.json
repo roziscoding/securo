@@ -2781,6 +2781,94 @@
       "empty": {
         "title": "Zatiaľ žiadne pripojenia",
         "subtitle": "Pridaj pripojenie a nasmeruj Securo na lokálnu Ollamu, OpenAI, Anthropic alebo ľubovoľný OpenAI-compatible endpoint."
+      },
+      "createContinue": "Vytvoriť a pokračovať",
+      "deleteFailed": "Nepodarilo sa odstrániť pripojenie",
+      "chatgpt": {
+        "provider": "ChatGPT",
+        "title": "Prihlásiť sa pomocou ChatGPT",
+        "description": "Spusť lokálneho pomocníka a bezpečne pripoj svoje predplatné ChatGPT. Tokeny nikdy neprechádzajú cez tento prehliadač.",
+        "httpsRequired": "Táto stránka Securo musí používať HTTPS, aby sa mohol zobraziť príkaz pomocníka.",
+        "instructions": "Spusť príkaz na počítači, na ktorom sa prihlásiš. Po výzve vlož jednorazový tajný kód samostatne.",
+        "command": "Príkaz pomocníka",
+        "secret": "Jednorazový tajný kód",
+        "secretWarning": "Zaobchádzaj s ním ako s heslom. Zobrazí sa iba pre toto párovanie a nikdy sa nekopíruje automaticky. Ak ho skopírujete, zostane v schránke, kým ho nenahradíte.",
+        "copyCommand": "Kopírovať príkaz pomocníka",
+        "copySecret": "Kopírovať jednorazový tajný kód",
+        "copied": "{{label}} skopírované",
+        "copyFailed": "Kopírovanie zlyhalo. Označ hodnotu a skopíruj ju ručne.",
+        "chooseModel": "Vybrať model ChatGPT",
+        "signIn": "Prihlásiť sa",
+        "signInAgain": "Znova sa prihlásiť",
+        "reconnect": "Znovu pripojiť",
+        "disconnect": "Odpojiť",
+        "disconnected": "ChatGPT bol odpojený; nastavenia pripojenia boli zachované.",
+        "revokeUnresolved": "Výsledok relácie poskytovateľa nie je potvrdený. Nevykonali sa žiadne ďalšie kroky.",
+        "testSuccess": "Pripojenie ChatGPT funguje.",
+        "testFailed": "Test pripojenia ChatGPT zlyhal.",
+        "noAccount": "E-mailová adresa účtu nie je k dispozícii",
+        "expires": "Prístup sa obnovuje automaticky; aktuálny prístup vyprší {{date}}.",
+        "status": {
+          "idle": "Pripravené",
+          "starting": "Vytvára sa bezpečné párovanie…",
+          "pending": "Čaká sa na pomocníka…",
+          "attempt_registered": "Prihlasovanie sa začalo v pomocníkovi…",
+          "completing": "Overuje sa pripojenie…",
+          "completed": "Pripojené k ChatGPT.",
+          "failed": "Párovanie zlyhalo.",
+          "cancelled": "Párovanie bolo zrušené.",
+          "expired": "Platnosť párovania vypršala. Začni znova.",
+          "network": "Securo je dočasne nedostupné. Skúša sa to znova…",
+          "reconciling": "Potvrdzovanie zrušenia…"
+        },
+        "credential": {
+          "not_connected": "Nepripojené",
+          "active": "Pripojené",
+          "disabled": "Vypnuté",
+          "revoked": "Odpojené",
+          "reauth_required": "Vyžaduje sa prihlásenie"
+        },
+        "errors": {
+          "transient": "Vyskytla sa dočasná chyba poskytovateľa. Opakovanie prebehne automaticky.",
+          "revoked": "Relácia ChatGPT bola zrušená. Prihlás sa znova.",
+          "scope_loss": "Chýba požadovaný prístup k účtu. Prihlás sa znova.",
+          "corrupt_token": "Uložené prihlasovacie údaje sú neplatné. Prihlás sa znova.",
+          "reauth_required": "Ak chceš pokračovať, prihlás sa znova.",
+          "too_early": "Pred ďalším pokusom chvíľu počkaj.",
+          "race_lost": "Iná aktualizácia sa dokončila skôr. Obnov stránku a skús to znova.",
+          "redirect_rejected": "Lokálne spätné volanie bolo odmietnuté. Spusť párovanie znova.",
+          "malformed_response": "Poskytovateľ vrátil neplatnú odpoveď. Spusť párovanie znova.",
+          "inactive": "Táto relácia nie je aktívna. Prihlás sa znova.",
+          "invalid_client": "Registrácia pomocníka je neplatná. Spusť párovanie znova.",
+          "expired": "Platnosť párovania vypršala. Začni znova.",
+          "refresh_outcome_unknown": "Výsledok obnovenia prihlasovacích údajov nie je známy. Pred ďalším pokusom počkaj.",
+          "revocation_pending": "Zrušenie relácie stále prebieha.",
+          "resource_cleanup_pending": "Bezpečné čistenie stále prebieha.",
+          "credential_busy": "Prebieha údržba prihlasovacích údajov. Skús to znova o chvíľu.",
+          "start_outcome_unknown": "Výsledok vytvorenia párovania nie je známy. Pred ďalším pokusom obnov stránku.",
+          "unknown": "Výsledok bezpečnej operácie s účtom nie je známy. Pred ďalším pokusom obnov stránku.",
+          "invalid": "Odpoveď poskytovateľa nebolo možné prijať. Spusť párovanie znova.",
+          "reauth": "Ak chceš pokračovať, prihlás sa znova.",
+          "busy": "Prebieha údržba prihlasovacích údajov. Skús to znova o chvíľu."
+        },
+        "confirm": {
+          "reconnect": {
+            "title": "Znova pripojiť ChatGPT?",
+            "description": "Pred spustením nového bezpečného párovania pre „{{name}}“ sa zruší aktuálna relácia poskytovateľa.",
+            "action": "Zrušiť reláciu a znova pripojiť"
+          },
+          "disconnect": {
+            "title": "Odpojiť ChatGPT?",
+            "description": "Relácia poskytovateľa sa zruší, ale pripojenie „{{name}}“ a jeho nastavenia zostanú zachované.",
+            "action": "Odpojiť"
+          },
+          "delete": {
+            "title": "Odstrániť pripojenie?",
+            "description": "Pri aktívnom pripojení ChatGPT Securo pred odstránením „{{name}}“ zruší reláciu poskytovateľa. Túto akciu nemožno vrátiť späť.",
+            "action": "Odstrániť"
+          }
+        },
+        "reconcileFailed": "Zrušenie sa nepodarilo potvrdiť. Skontrolujte pripojenie a skúste to znova."
       }
     }
   },

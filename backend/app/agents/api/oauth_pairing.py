@@ -6,7 +6,7 @@ from functools import wraps
 import json
 import math
 import uuid
-from typing import TypeVar
+from typing import TypeVar, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, ValidationError
@@ -19,6 +19,8 @@ from app.agents.schemas.oauth_pairing import (
     PairingBootstrap,
     PairingStart,
     PairingStatus,
+    PairingFailureCode,
+    PairingState,
 )
 from app.agents.services import oauth_pairing, openai_oauth
 from app.core.auth import current_active_user
@@ -169,8 +171,29 @@ async def _strict_body(request: Request, model: type[T]) -> T:
         body.clear()
 
 
-def _status(view: oauth_pairing.PairingView) -> PairingStatus:
-    return PairingStatus(pairing_id=view.id, state=view.state, expires_at=view.expires_at)
+_PUBLIC_PAIRING_FAILURES = {
+    "transient", "revoked", "scope_loss", "corrupt_token", "reauth_required",
+    "too_early", "race_lost", "redirect_rejected", "malformed_response", "inactive",
+    "invalid_client", "expired", "refresh_outcome_unknown", "revocation_pending",
+    "resource_cleanup_pending", "credential_busy", "start_outcome_unknown",
+}
+_PUBLIC_PAIRING_STATES = {
+    "pending", "attempt_registered", "completing", "completed", "cancelled", "failed",
+}
+
+
+def _status(
+    view: oauth_pairing.PairingView, *, include_failure: bool = False
+) -> PairingStatus:
+    if view.state not in _PUBLIC_PAIRING_STATES:
+        raise oauth_pairing.PairingUnavailable("pairing_not_available")
+    failure = view.failure_code if view.failure_code in _PUBLIC_PAIRING_FAILURES else None
+    return PairingStatus(
+        pairing_id=view.id,
+        state=cast(PairingState, view.state),
+        expires_at=view.expires_at,
+        failure_code=cast(PairingFailureCode, failure) if include_failure and failure else None,
+    )
 
 
 def _scrub_completion_failure(error: BaseException) -> None:
@@ -256,7 +279,8 @@ async def user_pairing_status(
 ):
     try:
         return _status(
-            await oauth_pairing.get_user_status(session, pairing_id, connection_id, user.id)
+            await oauth_pairing.get_user_status(session, pairing_id, connection_id, user.id),
+            include_failure=True,
         )
     except oauth_pairing.PairingUnavailable:
         raise _not_available() from None

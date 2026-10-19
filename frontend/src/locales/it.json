@@ -2603,6 +2603,94 @@
       "empty": {
         "title": "Ancora nessuna connessione",
         "subtitle": "Aggiungi una connessione per puntare Securo al tuo Ollama locale, OpenAI, Anthropic o qualsiasi endpoint compatibile con OpenAI."
+      },
+      "createContinue": "Crea e continua",
+      "deleteFailed": "Impossibile rimuovere la connessione",
+      "chatgpt": {
+        "provider": "ChatGPT",
+        "title": "Accedi con ChatGPT",
+        "description": "Esegui lo strumento locale per collegare in modo sicuro il tuo abbonamento ChatGPT. I token non passano mai attraverso questo browser.",
+        "httpsRequired": "Questa pagina di Securo deve usare HTTPS per poter mostrare il comando dello strumento.",
+        "instructions": "Esegui il comando sul computer dal quale accederai. Quando richiesto, incolla separatamente il segreto monouso.",
+        "command": "Comando dello strumento",
+        "secret": "Segreto monouso",
+        "secretWarning": "Trattalo come una password. Viene mostrato solo per questa associazione e non viene mai copiato automaticamente. Se lo copi, rimarrà negli appunti finché non lo sostituirai.",
+        "copyCommand": "Copia il comando dello strumento",
+        "copySecret": "Copia il segreto monouso",
+        "copied": "{{label}} copiato",
+        "copyFailed": "Impossibile copiare. Seleziona il valore e copialo manualmente.",
+        "chooseModel": "Scegli un modello ChatGPT",
+        "signIn": "Accedi",
+        "signInAgain": "Accedi di nuovo",
+        "reconnect": "Riconnetti",
+        "disconnect": "Disconnetti",
+        "disconnected": "ChatGPT disconnesso; le impostazioni di connessione sono state mantenute.",
+        "revokeUnresolved": "L'esito della sessione del provider non è confermato. Non sono state intraprese ulteriori azioni.",
+        "testSuccess": "La connessione ChatGPT funziona.",
+        "testFailed": "Il test della connessione a ChatGPT non è riuscito.",
+        "noAccount": "Nessun indirizzo email disponibile per l'account",
+        "expires": "L'accesso si rinnova automaticamente; l'accesso attuale scade il {{date}}.",
+        "status": {
+          "idle": "Pronto",
+          "starting": "Creazione di un'associazione sicura…",
+          "pending": "In attesa dello strumento…",
+          "attempt_registered": "Accesso avviato nello strumento…",
+          "completing": "Convalida della connessione…",
+          "completed": "Connesso a ChatGPT.",
+          "failed": "Associazione non riuscita.",
+          "cancelled": "L'associazione è stata annullata.",
+          "expired": "L'associazione è scaduta. Ricomincia.",
+          "network": "Securo è temporaneamente irraggiungibile. Nuovo tentativo…",
+          "reconciling": "Conferma dell’annullamento…"
+        },
+        "credential": {
+          "not_connected": "Non connesso",
+          "active": "Connesso",
+          "disabled": "Disabilitato",
+          "revoked": "Disconnesso",
+          "reauth_required": "Accesso richiesto"
+        },
+        "errors": {
+          "transient": "Si è verificato un errore temporaneo del provider. Il nuovo tentativo è automatico.",
+          "revoked": "La sessione ChatGPT è stata revocata. Accedi di nuovo.",
+          "scope_loss": "Manca l'accesso richiesto all'account. Accedi di nuovo.",
+          "corrupt_token": "Le credenziali salvate non sono valide. Accedi di nuovo.",
+          "reauth_required": "Accedi di nuovo per continuare.",
+          "too_early": "Attendi prima di riprovare.",
+          "race_lost": "Un altro aggiornamento è stato completato prima. Aggiorna la pagina e riprova.",
+          "redirect_rejected": "Il callback locale è stato rifiutato. Riavvia l'associazione.",
+          "malformed_response": "Il provider ha restituito una risposta non valida. Riavvia l'associazione.",
+          "inactive": "Questa sessione non è attiva. Accedi di nuovo.",
+          "invalid_client": "La registrazione dello strumento non è valida. Riavvia l'associazione.",
+          "expired": "L'associazione è scaduta. Ricomincia.",
+          "refresh_outcome_unknown": "L'esito del rinnovo delle credenziali è sconosciuto. Attendi prima di riprovare.",
+          "revocation_pending": "La revoca della sessione è ancora in sospeso.",
+          "resource_cleanup_pending": "La pulizia sicura è ancora in sospeso.",
+          "credential_busy": "È in corso un'operazione di manutenzione delle credenziali. Riprova tra poco.",
+          "start_outcome_unknown": "L'esito della creazione dell'associazione è sconosciuto. Aggiorna la pagina prima di riprovare.",
+          "unknown": "L'esito di un'operazione sicura sull'account è sconosciuto. Aggiorna la pagina prima di riprovare.",
+          "invalid": "Non è stato possibile accettare la risposta del provider. Riavvia l'associazione.",
+          "reauth": "Accedi di nuovo per continuare.",
+          "busy": "È in corso un'operazione di manutenzione delle credenziali. Riprova tra poco."
+        },
+        "confirm": {
+          "reconnect": {
+            "title": "Riconnettere ChatGPT?",
+            "description": "Questa operazione revoca la sessione attuale del provider prima di avviare una nuova associazione sicura per «{{name}}».",
+            "action": "Revoca e riconnetti"
+          },
+          "disconnect": {
+            "title": "Disconnettere ChatGPT?",
+            "description": "Questa operazione revoca la sessione del provider, ma conserva «{{name}}» e le relative impostazioni.",
+            "action": "Disconnetti"
+          },
+          "delete": {
+            "title": "Eliminare la connessione?",
+            "description": "Se la connessione ChatGPT è attiva, Securo revoca la sessione del provider prima di eliminare «{{name}}». Questa operazione non può essere annullata.",
+            "action": "Elimina"
+          }
+        },
+        "reconcileFailed": "Impossibile confermare l’annullamento. Controlla la connessione e riprova."
       }
     },
     "newConversation": "Nuova conversazione",

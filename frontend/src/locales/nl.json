@@ -2639,6 +2639,94 @@
       "empty": {
         "title": "Nog geen verbindingen",
         "subtitle": "Voeg een verbinding toe om Securo te richten op uw lokale Ollama, OpenAI, Anthropic of een ander OpenAI-compatibel endpoint."
+      },
+      "createContinue": "Aanmaken en doorgaan",
+      "deleteFailed": "Kon verbinding niet verwijderen",
+      "chatgpt": {
+        "provider": "ChatGPT",
+        "title": "Aanmelden met ChatGPT",
+        "description": "Voer de lokale helper uit om uw ChatGPT-abonnement veilig te verbinden. Tokens worden nooit via deze browser verzonden.",
+        "httpsRequired": "Deze Securo-pagina moet HTTPS gebruiken voordat de helperopdracht kan worden weergegeven.",
+        "instructions": "Voer de opdracht uit op de computer waarop u zich aanmeldt. Plak desgevraagd de eenmalige geheime code afzonderlijk.",
+        "command": "Helperopdracht",
+        "secret": "Eenmalige geheime code",
+        "secretWarning": "Behandel dit als een wachtwoord. De code wordt alleen voor deze koppeling weergegeven en nooit automatisch gekopieerd. Als je de code kopieert, blijft deze op het klembord staan totdat je hem vervangt.",
+        "copyCommand": "Helperopdracht kopiëren",
+        "copySecret": "Eenmalige geheime code kopiëren",
+        "copied": "{{label}} gekopieerd",
+        "copyFailed": "Kopiëren mislukt. Selecteer de waarde en kopieer deze handmatig.",
+        "chooseModel": "Kies een ChatGPT-model",
+        "signIn": "Aanmelden",
+        "signInAgain": "Opnieuw aanmelden",
+        "reconnect": "Opnieuw verbinden",
+        "disconnect": "Verbinding verbreken",
+        "disconnected": "Verbinding met ChatGPT verbroken; de verbindingsinstellingen zijn behouden.",
+        "revokeUnresolved": "De uitkomst van de sessie bij de aanbieder is niet bevestigd. Er is geen verdere actie ondernomen.",
+        "testSuccess": "ChatGPT-verbinding werkt.",
+        "testFailed": "ChatGPT-verbindingstest mislukt.",
+        "noAccount": "Geen e-mailadres beschikbaar voor het account",
+        "expires": "De toegang wordt automatisch vernieuwd; de huidige toegang verloopt op {{date}}.",
+        "status": {
+          "idle": "Gereed",
+          "starting": "Veilige koppeling wordt aangemaakt…",
+          "pending": "Wachten op de helper…",
+          "attempt_registered": "Aanmelding gestart in de helper…",
+          "completing": "Verbinding wordt gecontroleerd…",
+          "completed": "Verbonden met ChatGPT.",
+          "failed": "Koppeling mislukt.",
+          "cancelled": "Koppeling geannuleerd.",
+          "expired": "Koppeling verlopen. Begin opnieuw.",
+          "network": "Securo is tijdelijk niet bereikbaar. Opnieuw proberen…",
+          "reconciling": "Annulering bevestigen…"
+        },
+        "credential": {
+          "not_connected": "Niet verbonden",
+          "active": "Verbonden",
+          "disabled": "Uitgeschakeld",
+          "revoked": "Verbinding verbroken",
+          "reauth_required": "Aanmelding vereist"
+        },
+        "errors": {
+          "transient": "Er is een tijdelijke fout opgetreden bij de aanbieder. Er wordt automatisch opnieuw geprobeerd.",
+          "revoked": "De ChatGPT-sessie is ingetrokken. Meld u opnieuw aan.",
+          "scope_loss": "De vereiste accounttoegang ontbreekt. Meld u opnieuw aan.",
+          "corrupt_token": "De opgeslagen aanmeldgegevens zijn ongeldig. Meld u opnieuw aan.",
+          "reauth_required": "Meld u opnieuw aan om door te gaan.",
+          "too_early": "Wacht even voordat u het opnieuw probeert.",
+          "race_lost": "Een andere update is eerder voltooid. Vernieuw de pagina en probeer het opnieuw.",
+          "redirect_rejected": "De lokale callback is geweigerd. Start de koppeling opnieuw.",
+          "malformed_response": "De aanbieder heeft een ongeldig antwoord teruggestuurd. Start de koppeling opnieuw.",
+          "inactive": "Deze sessie is niet actief. Meld u opnieuw aan.",
+          "invalid_client": "De registratie van de helper is ongeldig. Start de koppeling opnieuw.",
+          "expired": "De koppeling is verlopen. Begin opnieuw.",
+          "refresh_outcome_unknown": "Het resultaat van het vernieuwen van de aanmeldgegevens is onbekend. Wacht voordat u het opnieuw probeert.",
+          "revocation_pending": "Het intrekken van de sessie is nog niet voltooid.",
+          "resource_cleanup_pending": "Het veilig opschonen is nog niet voltooid.",
+          "credential_busy": "De aanmeldgegevens worden momenteel bijgewerkt. Probeer het zo opnieuw.",
+          "start_outcome_unknown": "Het resultaat van het aanmaken van de koppeling is onbekend. Vernieuw de pagina voordat u het opnieuw probeert.",
+          "unknown": "Het resultaat van een beveiligde accountbewerking is onbekend. Vernieuw de pagina voordat u het opnieuw probeert.",
+          "invalid": "Het antwoord van de aanbieder kon niet worden geaccepteerd. Start de koppeling opnieuw.",
+          "reauth": "Meld u opnieuw aan om door te gaan.",
+          "busy": "De aanmeldgegevens worden momenteel bijgewerkt. Probeer het zo opnieuw."
+        },
+        "confirm": {
+          "reconnect": {
+            "title": "Opnieuw verbinding maken met ChatGPT?",
+            "description": "Hiermee wordt de huidige sessie bij de aanbieder ingetrokken voordat een nieuwe veilige koppeling voor “{{name}}” wordt gestart.",
+            "action": "Intrekken en opnieuw verbinden"
+          },
+          "disconnect": {
+            "title": "Verbinding met ChatGPT verbreken?",
+            "description": "Hiermee wordt de sessie bij de aanbieder ingetrokken, maar blijven “{{name}}” en de bijbehorende instellingen behouden.",
+            "action": "Verbinding verbreken"
+          },
+          "delete": {
+            "title": "Verbinding verwijderen?",
+            "description": "Bij een actieve ChatGPT-verbinding trekt Securo de sessie bij de aanbieder in voordat “{{name}}” wordt verwijderd. Dit kan niet ongedaan worden gemaakt.",
+            "action": "Verwijderen"
+          }
+        },
+        "reconcileFailed": "De annulering kon niet worden bevestigd. Controleer de verbinding en probeer het opnieuw."
       }
     }
   },

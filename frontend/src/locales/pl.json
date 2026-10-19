@@ -2709,6 +2709,94 @@
       "empty": {
         "title": "Brak połączeń",
         "subtitle": "Dodaj połączenie, aby skierować Securo do swojego lokalnego Ollamy, OpenAI, Anthropic lub dowolnego endpointu zgodnego z OpenAI."
+      },
+      "createContinue": "Utwórz i kontynuuj",
+      "deleteFailed": "Nie można usunąć połączenia",
+      "chatgpt": {
+        "provider": "ChatGPT",
+        "title": "Zaloguj się za pomocą ChatGPT",
+        "description": "Uruchom lokalny program pomocniczy, aby bezpiecznie połączyć subskrypcję ChatGPT. Tokeny nigdy nie są przesyłane przez tę przeglądarkę.",
+        "httpsRequired": "Ta strona Securo musi korzystać z protokołu HTTPS, aby można było wyświetlić polecenie programu pomocniczego.",
+        "instructions": "Uruchom polecenie na komputerze, na którym się zalogujesz. Po wyświetleniu monitu wklej osobno jednorazowy kod.",
+        "command": "Polecenie programu pomocniczego",
+        "secret": "Jednorazowy kod",
+        "secretWarning": "Traktuj ten kod jak hasło. Jest wyświetlany tylko dla tego parowania i nigdy nie jest kopiowany automatycznie. Jeśli go skopiujesz, pozostanie w schowku, dopóki go nie zastąpisz.",
+        "copyCommand": "Skopiuj polecenie programu pomocniczego",
+        "copySecret": "Skopiuj jednorazowy kod",
+        "copied": "Skopiowano: {{label}}",
+        "copyFailed": "Nie udało się skopiować. Zaznacz wartość i skopiuj ją ręcznie.",
+        "chooseModel": "Wybierz model ChatGPT",
+        "signIn": "Zaloguj się",
+        "signInAgain": "Zaloguj się ponownie",
+        "reconnect": "Połącz ponownie",
+        "disconnect": "Rozłącz",
+        "disconnected": "ChatGPT rozłączony; ustawienia połączenia zostały zachowane.",
+        "revokeUnresolved": "Wynik sesji dostawcy nie jest potwierdzony. Nie podjęto żadnych dalszych działań.",
+        "testSuccess": "Połączenie ChatGPT działa.",
+        "testFailed": "Test połączenia ChatGPT nie powiódł się.",
+        "noAccount": "Brak dostępnego adresu e-mail konta",
+        "expires": "Dostęp jest odnawiany automatycznie; bieżący okres dostępu wygasa {{date}}.",
+        "status": {
+          "idle": "Gotowe",
+          "starting": "Tworzenie bezpiecznego parowania…",
+          "pending": "Oczekiwanie na program pomocniczy…",
+          "attempt_registered": "Rozpoczęto logowanie w programie pomocniczym…",
+          "completing": "Sprawdzanie połączenia…",
+          "completed": "Połączono z ChatGPT.",
+          "failed": "Parowanie nie powiodło się.",
+          "cancelled": "Parowanie zostało anulowane.",
+          "expired": "Parowanie wygasło. Zacznij ponownie.",
+          "network": "Securo jest chwilowo niedostępne. Ponawianie próby…",
+          "reconciling": "Potwierdzanie anulowania…"
+        },
+        "credential": {
+          "not_connected": "Brak połączenia",
+          "active": "Połączono",
+          "disabled": "Wyłączono",
+          "revoked": "Rozłączono",
+          "reauth_required": "Wymagane logowanie"
+        },
+        "errors": {
+          "transient": "Wystąpił tymczasowy błąd dostawcy. Próba zostanie ponowiona automatycznie.",
+          "revoked": "Sesja ChatGPT została unieważniona. Zaloguj się ponownie.",
+          "scope_loss": "Brakuje wymaganego dostępu do konta. Zaloguj się ponownie.",
+          "corrupt_token": "Zapisane dane logowania są nieprawidłowe. Zaloguj się ponownie.",
+          "reauth_required": "Zaloguj się ponownie, aby kontynuować.",
+          "too_early": "Zaczekaj przed ponowieniem próby.",
+          "race_lost": "Inna aktualizacja zakończyła się wcześniej. Odśwież stronę i spróbuj ponownie.",
+          "redirect_rejected": "Lokalne wywołanie zwrotne zostało odrzucone. Rozpocznij parowanie ponownie.",
+          "malformed_response": "Dostawca zwrócił nieprawidłową odpowiedź. Rozpocznij parowanie ponownie.",
+          "inactive": "Ta sesja jest nieaktywna. Zaloguj się ponownie.",
+          "invalid_client": "Rejestracja programu pomocniczego jest nieprawidłowa. Rozpocznij parowanie ponownie.",
+          "expired": "Parowanie wygasło. Zacznij ponownie.",
+          "refresh_outcome_unknown": "Wynik odświeżenia danych logowania jest nieznany. Zaczekaj przed ponowieniem próby.",
+          "revocation_pending": "Unieważnianie sesji nadal trwa.",
+          "resource_cleanup_pending": "Bezpieczne usuwanie danych nadal trwa.",
+          "credential_busy": "Dane logowania są obecnie aktualizowane. Spróbuj ponownie za chwilę.",
+          "start_outcome_unknown": "Wynik tworzenia parowania jest nieznany. Odśwież stronę przed ponowieniem próby.",
+          "unknown": "Wynik bezpiecznej operacji na koncie jest nieznany. Odśwież stronę przed ponowieniem próby.",
+          "invalid": "Nie można zaakceptować odpowiedzi dostawcy. Rozpocznij parowanie ponownie.",
+          "reauth": "Zaloguj się ponownie, aby kontynuować.",
+          "busy": "Dane logowania są obecnie aktualizowane. Spróbuj ponownie za chwilę."
+        },
+        "confirm": {
+          "reconnect": {
+            "title": "Połączyć ponownie z ChatGPT?",
+            "description": "Spowoduje to unieważnienie bieżącej sesji u dostawcy przed rozpoczęciem nowego bezpiecznego parowania dla „{{name}}”.",
+            "action": "Unieważnij i połącz ponownie"
+          },
+          "disconnect": {
+            "title": "Rozłączyć ChatGPT?",
+            "description": "Spowoduje to unieważnienie sesji u dostawcy, ale zachowa „{{name}}” i jego ustawienia.",
+            "action": "Rozłącz"
+          },
+          "delete": {
+            "title": "Usunąć połączenie?",
+            "description": "W przypadku aktywnego połączenia z ChatGPT Securo unieważni sesję u dostawcy przed usunięciem „{{name}}”. Tej operacji nie można cofnąć.",
+            "action": "Usuń"
+          }
+        },
+        "reconcileFailed": "Nie udało się potwierdzić anulowania. Sprawdź połączenie i spróbuj ponownie."
       }
     },
     "newConversation": "Nowa rozmowa",

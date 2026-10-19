@@ -1741,7 +1741,15 @@ export interface Agent {
   updated_at: string
 }
 
-export type LlmConnectionKind = 'ollama' | 'openai' | 'anthropic' | 'openai_compatible'
+export type LlmConnectionKind = 'ollama' | 'openai' | 'anthropic' | 'openai_compatible' | 'openai_chatgpt'
+
+export type OAuthCredentialStatus = 'not_connected' | 'active' | 'disabled' | 'revoked' | 'reauth_required'
+export type OAuthErrorCode = 'transient' | 'revoked' | 'scope_loss' | 'corrupt_token' | 'reauth_required' | 'too_early' | 'race_lost' | 'redirect_rejected' | 'malformed_response' | 'inactive' | 'invalid_client' | 'expired' | 'refresh_outcome_unknown' | 'revocation_pending' | 'resource_cleanup_pending'
+export type PairingState = 'pending' | 'attempt_registered' | 'completing' | 'completed' | 'cancelled' | 'failed'
+export type PairingFailureCode = OAuthErrorCode | 'credential_busy' | 'start_outcome_unknown'
+export interface PairingStart { pairing_id: string; secretBytes: Uint8Array; expires_at: string }
+export interface PairingStatus { pairing_id: string; state: PairingState; expires_at: string; failure_code?: PairingFailureCode | null }
+export interface OAuthModel { slug: string; display_name: string }
 
 export interface LlmConnection {
   id: string
@@ -1752,6 +1760,13 @@ export interface LlmConnection {
   extra: Record<string, unknown>
   is_default: boolean
   has_api_key: boolean
+  auth_method: 'none' | 'api_key' | 'chatgpt_oauth'
+  credential_status: OAuthCredentialStatus | null
+  credential_error_code: OAuthErrorCode | null
+  account_email: string | null
+  scopes: string[]
+  access_token_expires_at: string | null
+  needs_reauthorization: boolean
   created_at: string
   updated_at: string
 }
@@ -1769,7 +1784,8 @@ export interface LlmConnectionPayload {
 export interface LlmConnectionTestResult {
   ok: boolean
   detail: string
-  models?: string[]
+  models?: Array<string | OAuthModel>
+  auth_state?: OAuthErrorCode | null
 }
 
 export interface AgentConversation {
@@ -1815,6 +1831,238 @@ export interface KnowledgeDoc {
   pinned: boolean
   created_at: string
   updated_at: string
+}
+
+const PAIRING_START_MAX_BYTES = 16_384
+const PAIRING_START_ERROR_CODES = new Set<PairingFailureCode>([
+  'transient', 'revoked', 'scope_loss', 'corrupt_token', 'reauth_required', 'too_early',
+  'race_lost', 'redirect_rejected', 'malformed_response', 'inactive', 'invalid_client',
+  'expired', 'refresh_outcome_unknown', 'revocation_pending', 'resource_cleanup_pending',
+  'credential_busy', 'start_outcome_unknown',
+])
+
+async function readBoundedResponse(response: Response): Promise<Uint8Array> {
+  if (!response.body) throw new Error('pairing_start_invalid')
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!(value instanceof Uint8Array) || total + value.byteLength > PAIRING_START_MAX_BYTES) {
+        value?.fill(0)
+        throw new Error('pairing_start_invalid')
+      }
+      const owned = new Uint8Array(value)
+      value.fill(0)
+      chunks.push(owned)
+      total += owned.byteLength
+    }
+    const body = new Uint8Array(total)
+    let offset = 0
+    for (const chunk of chunks) {
+      body.set(chunk, offset)
+      offset += chunk.byteLength
+      chunk.fill(0)
+    }
+    return body
+  } catch (error) {
+    for (const chunk of chunks) chunk.fill(0)
+    try { await reader.cancel() } catch { /* best effort */ }
+    if (error instanceof DOMException && error.name === 'AbortError') throw error
+    throw new Error('pairing_start_invalid')
+  } finally {
+    try { reader.releaseLock() } catch { /* best effort */ }
+  }
+}
+
+function isHttpTokenCharacter(code: number): boolean {
+  return (
+    (code >= 0x30 && code <= 0x39)
+    || (code >= 0x41 && code <= 0x5a)
+    || (code >= 0x61 && code <= 0x7a)
+    || code === 0x21
+    || code === 0x23
+    || code === 0x24
+    || code === 0x25
+    || code === 0x26
+    || code === 0x27
+    || code === 0x2a
+    || code === 0x2b
+    || code === 0x2d
+    || code === 0x2e
+    || code === 0x5e
+    || code === 0x5f
+    || code === 0x60
+    || code === 0x7c
+    || code === 0x7e
+  )
+}
+
+function isOptionalWhitespace(code: number): boolean {
+  return code === 0x20 || code === 0x09
+}
+
+function hasJsonMediaType(response: Response): boolean {
+  const contentType = response.headers.get('Content-Type')
+  if (!contentType || contentType.length < 16) return false
+  if (contentType.slice(0, 16).toLowerCase() !== 'application/json') return false
+
+  let position = 16
+  while (position < contentType.length) {
+    while (position < contentType.length && isOptionalWhitespace(contentType.charCodeAt(position))) position += 1
+    if (position === contentType.length || contentType.charCodeAt(position) !== 0x3b) return false
+    position += 1
+    while (position < contentType.length && isOptionalWhitespace(contentType.charCodeAt(position))) position += 1
+
+    const nameStart = position
+    while (position < contentType.length && isHttpTokenCharacter(contentType.charCodeAt(position))) position += 1
+    if (position === nameStart || contentType.charCodeAt(position) !== 0x3d) return false
+    position += 1
+
+    if (contentType.charCodeAt(position) === 0x22) {
+      position += 1
+      let closed = false
+      while (position < contentType.length) {
+        const code = contentType.charCodeAt(position)
+        if (code === 0x22) {
+          position += 1
+          closed = true
+          break
+        }
+        if (code === 0x5c) {
+          position += 1
+          if (position === contentType.length) return false
+          const escaped = contentType.charCodeAt(position)
+          if (!(escaped === 0x09 || (escaped >= 0x20 && escaped <= 0x7e) || (escaped >= 0x80 && escaped <= 0xff))) return false
+          position += 1
+          continue
+        }
+        const qdtext = code === 0x09
+          || code === 0x20
+          || code === 0x21
+          || (code >= 0x23 && code <= 0x5b)
+          || (code >= 0x5d && code <= 0x7e)
+          || (code >= 0x80 && code <= 0xff)
+        if (!qdtext) return false
+        position += 1
+      }
+      if (!closed) return false
+    } else {
+      const valueStart = position
+      while (position < contentType.length && isHttpTokenCharacter(contentType.charCodeAt(position))) position += 1
+      if (position === valueStart) return false
+    }
+
+    // OWS consumed by the next iteration is only legal before another semicolon.
+    if (position < contentType.length && !isOptionalWhitespace(contentType.charCodeAt(position)) && contentType.charCodeAt(position) !== 0x3b) return false
+  }
+  return true
+}
+
+async function cancelResponseBody(response: Response): Promise<void> {
+  if (!response.body) return
+  try {
+    const reader = response.body.getReader()
+    try { await reader.cancel() } finally {
+      try { reader.releaseLock() } catch { /* best effort */ }
+    }
+  } catch {
+    try { await response.body.cancel() } catch { /* best effort */ }
+  }
+}
+
+function pairingStartHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { Accept: 'application/json' }
+  const token = localStorage.getItem('token')
+  if (token) headers.Authorization = `Bearer ${token}`
+  const workspaceId = localStorage.getItem(WORKSPACE_STORAGE_KEY)
+  if (workspaceId) headers['X-Workspace-Id'] = workspaceId
+  return headers
+}
+
+async function startPairingFetch(id: string, signal?: AbortSignal): Promise<PairingStart> {
+  if (!/^[A-Za-z0-9-]{1,128}$/.test(id)) throw new Error('pairing_start_invalid')
+  const response = await fetch(`/api/agents/connections/${id}/chatgpt/pairings`, {
+    method: 'POST',
+    headers: pairingStartHeaders(),
+    credentials: 'same-origin',
+    cache: 'no-store',
+    redirect: 'error',
+    signal,
+  })
+  if (response.redirected) {
+    await cancelResponseBody(response)
+    throw new Error('pairing_start_invalid')
+  }
+
+  const success = response.status === 201
+  const jsonMediaType = hasJsonMediaType(response)
+  if ((response.ok && !success) || (success && !jsonMediaType)) {
+    await cancelResponseBody(response)
+    throw new Error('pairing_start_invalid')
+  }
+  if (!response.ok && !jsonMediaType) {
+    await cancelResponseBody(response)
+    throw new Error('pairing_start_unavailable')
+  }
+
+  const source = await readBoundedResponse(response)
+  let text = ''
+  let parsed: Record<string, unknown> | null = null
+  let secret = ''
+  let secretValue: unknown = null
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(source)
+    source.fill(0)
+    const value: unknown = JSON.parse(text)
+    if (!success) {
+      const code = value && typeof value === 'object' && !Array.isArray(value)
+        ? (value as Record<string, unknown>).code
+        : undefined
+      const safeCode = typeof code === 'string' && PAIRING_START_ERROR_CODES.has(code as PairingFailureCode)
+        ? code
+        : 'unavailable'
+      throw new Error(`pairing_start_${safeCode}`)
+    }
+
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('pairing_start_invalid')
+    parsed = value as Record<string, unknown>
+
+    const keys = Object.keys(parsed)
+    if (keys.length !== 3 || !keys.includes('pairing_id') || !keys.includes('secret') || !keys.includes('expires_at')) {
+      throw new Error('pairing_start_invalid')
+    }
+    const pairingId = parsed.pairing_id
+    const expiresAt = parsed.expires_at
+    secretValue = parsed.secret
+    if (typeof pairingId !== 'string' || pairingId.length < 1 || pairingId.length > 128
+      || typeof expiresAt !== 'string' || expiresAt.length < 1 || expiresAt.length > 64
+      || !Number.isFinite(Date.parse(expiresAt))
+      || typeof secretValue !== 'string' || secretValue.length < 1 || secretValue.length > 4096) {
+      throw new Error('pairing_start_invalid')
+    }
+    secret = secretValue
+    const secretBytes = new TextEncoder().encode(secret)
+    parsed.secret = ''
+    Reflect.deleteProperty(parsed, 'secret')
+    return { pairing_id: pairingId, expires_at: expiresAt, secretBytes }
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('pairing_start_')) throw error
+    if (!success) throw new Error('pairing_start_unavailable')
+    throw new Error('pairing_start_invalid')
+  } finally {
+    source.fill(0)
+    if (parsed) {
+      try { parsed.secret = '' } catch { /* best effort */ }
+      try { Reflect.deleteProperty(parsed, 'secret') } catch { /* best effort */ }
+    }
+    text = ''
+    secret = ''
+    secretValue = null
+    parsed = null
+  }
 }
 
 export const agents = {
@@ -1922,8 +2170,8 @@ export const agents = {
   chatUrl: (agentId: string) => `/api/agents/${agentId}/chat`,
 
   connections: {
-    list: async (): Promise<LlmConnection[]> => {
-      const { data } = await api.get('/agents/connections')
+    list: async (signal?: AbortSignal): Promise<LlmConnection[]> => {
+      const { data } = await api.get('/agents/connections', { signal })
       return data
     },
     get: async (id: string): Promise<LlmConnection> => {
@@ -1944,6 +2192,17 @@ export const agents = {
     test: async (id: string): Promise<LlmConnectionTestResult> => {
       const { data } = await api.post(`/agents/connections/${id}/test`)
       return data
+    },
+    startPairing: startPairingFetch,
+    pairingStatus: async (id: string, pairingId: string, signal?: AbortSignal): Promise<PairingStatus> => {
+      const { data } = await api.get(`/agents/connections/${id}/chatgpt/pairings/${pairingId}`, { signal })
+      return data
+    },
+    cancelPairing: async (id: string, pairingId: string): Promise<void> => {
+      await api.delete(`/agents/connections/${id}/chatgpt/pairings/${pairingId}`)
+    },
+    revoke: async (id: string): Promise<void> => {
+      await api.post(`/agents/connections/${id}/revoke`)
     },
   },
 }

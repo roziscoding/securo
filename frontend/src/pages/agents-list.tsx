@@ -20,7 +20,7 @@ export default function AgentsListPage() {
   const { data: list, isLoading } = useQuery({ queryKey: ['agents'], queryFn: () => agents.list() })
   const { data: connections } = useQuery({
     queryKey: ['agent-connections'],
-    queryFn: () => agents.connections.list(),
+    queryFn: ({ signal }) => agents.connections.list(signal),
   })
   // Setting an agent as default clears the flag on every other agent
   // server-side; we still need to refresh both queries so the badge
