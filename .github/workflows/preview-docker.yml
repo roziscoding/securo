@@ -2,7 +2,7 @@ name: Preview Docker images
 
 on:
   pull_request_target:
-    types: [labeled]
+    types: [labeled, synchronize, reopened]
 
 # This workflow is intentionally kept on the protected default branch. It uses
 # the trusted workflow definition while building the exact commit that was
@@ -10,11 +10,18 @@ on:
 permissions:
   contents: read
 
+# Different PRs may publish in parallel. Runs for the same PR are serialized so
+# its convenient `pr-<number>` alias cannot be updated concurrently.
+concurrency:
+  group: preview-docker-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
 jobs:
   build:
     name: Build ${{ matrix.image }} preview
     if: >-
-      github.event.label.name == 'preview-docker' &&
+      (github.event.action != 'labeled' || github.event.label.name == 'preview-docker') &&
+      contains(github.event.pull_request.labels.*.name, 'preview-docker') &&
       github.actor == github.repository_owner &&
       github.triggering_actor == github.repository_owner &&
       github.event.sender.login == github.repository_owner &&
@@ -71,7 +78,8 @@ jobs:
           TAG="pr-${PR_NUMBER}-${HEAD_SHA}-run-${RUN_ID}-${RUN_ATTEMPT}"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "reference=${IMAGE}:${TAG}" >> "$GITHUB_OUTPUT"
+          echo "pr_reference=${IMAGE}:pr-${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "unique_reference=${IMAGE}:${TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
@@ -94,7 +102,9 @@ jobs:
           file: ${{ matrix.dockerfile }}
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.preview.outputs.reference }}
+          tags: |
+            ${{ steps.preview.outputs.pr_reference }}
+            ${{ steps.preview.outputs.unique_reference }}
           build-args: ${{ matrix.build_arg_name && format('{0}={1}', matrix.build_arg_name, steps.preview.outputs.tag) || '' }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
@@ -119,8 +129,9 @@ jobs:
           {
             echo '### `${{ matrix.image }}`'
             echo
-            echo '`${{ steps.preview.outputs.reference }}@${{ steps.build.outputs.digest }}`'
+            echo '- PR alias: `${{ steps.preview.outputs.pr_reference }}`'
+            echo '- Historical tag: `${{ steps.preview.outputs.unique_reference }}`'
+            echo '- Immutable deployment identity: `${{ steps.preview.outputs.image }}@${{ steps.build.outputs.digest }}`'
             echo
-            echo 'The digest above is the immutable deployment identity.'
-            echo 'To build a newer commit, remove and reapply `preview-docker`.'
+            echo 'New pushes rebuild automatically while `preview-docker` remains applied.'
           } >> "$GITHUB_STEP_SUMMARY"
